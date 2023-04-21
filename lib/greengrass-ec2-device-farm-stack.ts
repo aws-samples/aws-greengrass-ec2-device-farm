@@ -41,7 +41,7 @@ export class GreengrassEC2DeviceFarmStack extends cdk.Stack {
     const ami_ubuntu_2204_x86_64 = this.getUbuntuAmi('22.04', 'amd64');
     const ami_ubuntu_2204_arm_64 = this.getUbuntuAmi('22.04', 'arm64');
     const ami_ubuntu_2004_x86_64 = this.getUbuntuAmi('20.04', 'amd64');
-    const ami_ubuntu_1804_x86_64 = this.getUbuntuAmi('18.04', 'amd64');
+    const ami_ubuntu_2004_arm_64 = this.getUbuntuAmi('20.04', 'arm64');
 
     // Windows first because it's slowest to come up
     this.createInstance('windows-server-2022', ami_windows_server_2022);
@@ -51,7 +51,7 @@ export class GreengrassEC2DeviceFarmStack extends cdk.Stack {
     this.createInstance('ubuntu-22-04-x86-64', ami_ubuntu_2204_x86_64);
     this.createInstance('ubuntu-22-04-arm-64', ami_ubuntu_2204_arm_64);
     this.createInstance('ubuntu-20-04-x86-64', ami_ubuntu_2004_x86_64);
-    this.createInstance('ubuntu-18-04-x86-64', ami_ubuntu_1804_x86_64);
+    this.createInstance('ubuntu-20-04-arm-64', ami_ubuntu_2004_arm_64);
 
     new cdk.CfnOutput(this, 'Key Pair Name', { value: this.keyPair.keyName });
     new cdk.CfnOutput(this, 'Download Key Command', {
