@@ -227,8 +227,7 @@ export class GreengrassEC2DeviceFarmStack extends cdk.Stack {
   }
 
   private getAmazonLinuxAmi(cpuType: ec2.AmazonLinuxCpuType): ec2.IMachineImage {
-    return ec2.MachineImage.latestAmazonLinux({
-      generation: ec2.AmazonLinuxGeneration.AMAZON_LINUX_2,
+    return ec2.MachineImage.latestAmazonLinux2({
       cpuType: cpuType
     });
   }
