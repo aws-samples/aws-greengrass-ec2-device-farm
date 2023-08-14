@@ -244,6 +244,9 @@ export class GreengrassEC2DeviceFarmStack extends cdk.Stack {
     const instanceType = name.includes('arm') ? ec2.InstanceClass.T4G : ec2.InstanceClass.T3;
     const instanceSize = name.includes('windows') ? ec2.InstanceSize.SMALL : ec2.InstanceSize.MICRO;
     const securityGroup = name.includes('windows') ? this.windowsSecurityGroup : this.linuxSecurityGroup;
+    // Set volume sizes and root device names that match the AMI defaults
+    const volumeSize = name.includes('windows') ? 30 : 8;
+    const rootDeviceName = name.includes('al2') ? '/dev/xvda' : '/dev/sda1';
 
     const ec2Instance = new ec2.Instance(this, `${this.stackName}-${name}`, {
       instanceName: `${this.stackName}-${name}`,
@@ -253,7 +256,14 @@ export class GreengrassEC2DeviceFarmStack extends cdk.Stack {
       securityGroup: securityGroup,
       keyName: this.keyPair.keyName,
       role: this.instanceRole,
-      userData: this.createUserData(`${this.stackName}-${name}`)
+      userData: this.createUserData(`${this.stackName}-${name}`),
+      // Override the AMI root device name to enable encryption for the root device (for AwsSolutions-EC26)
+      blockDevices: [{
+        deviceName: rootDeviceName,
+        volume: ec2.BlockDeviceVolume.ebs(volumeSize, {
+          encrypted: true
+        })
+      }]
     });
 
     NagSuppressions.addResourceSuppressions(ec2Instance, [
