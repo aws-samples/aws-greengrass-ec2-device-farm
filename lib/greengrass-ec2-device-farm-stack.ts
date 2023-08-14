@@ -242,7 +242,7 @@ export class GreengrassEC2DeviceFarmStack extends cdk.Stack {
 
   private createInstance(name: string, ami: ec2.IMachineImage) {
     const instanceType = name.includes('arm') ? ec2.InstanceClass.T4G : ec2.InstanceClass.T3;
-    const instanceSize = name.includes('windows') ? ec2.InstanceSize.SMALL : ec2.InstanceSize.MICRO;
+    const instanceSize = ec2.InstanceSize.SMALL;
     const securityGroup = name.includes('windows') ? this.windowsSecurityGroup : this.linuxSecurityGroup;
     // Set volume sizes and root device names that match the AMI defaults
     const volumeSize = name.includes('windows') ? 30 : 8;
