@@ -296,10 +296,10 @@ apt install -y default-jre unzip python3-pip python3-venv`;
 <powershell>
 cd ~
 iex ((New-Object System.Net.WebClient).DownloadString('https://chocolatey.org/install.ps1'))
-choco install -y python3 --version=3.9.0
+choco install -y python3 --version=3.11.8
 choco install -y awscli
-choco install -y openjdk --version=19.0
-$ENV:PATH="$ENV:PATH;C:\\Python39;C:\\Program Files\\Amazon\\AWSCLIV2;C:\\Program Files\\OpenJDK\\jdk-19\\bin"
+choco install -y openjdk --version=20.0.2
+$ENV:PATH="$ENV:PATH;C:\\Python311;C:\\Program Files\\Amazon\\AWSCLIV2;C:\\Program Files\\OpenJDK\\jdk-20.0.2\\bin"
 $env:PASSWORD = -join ((48..57) + (65..90) + (97..122) | Get-Random -Count 12 | % {[char]$_})
 net user /add ggc_user $env:PASSWORD
 wmic UserAccount where "Name='ggc_user'" set PasswordExpires=False
