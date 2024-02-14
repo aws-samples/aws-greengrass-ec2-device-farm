@@ -15,7 +15,7 @@ export class GreengrassEC2DeviceFarmStack extends cdk.Stack {
   instanceRole: iam.Role;
   greengrassRole: iam.Role;
   greengrassPolicy: iam.ManagedPolicy;
-  keyPair: ec2.CfnKeyPair;
+  keyPair: ec2.KeyPair;
 
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
@@ -53,9 +53,9 @@ export class GreengrassEC2DeviceFarmStack extends cdk.Stack {
     this.createInstance('ubuntu-20-04-x86-64', ami_ubuntu_2004_x86_64);
     this.createInstance('ubuntu-20-04-arm-64', ami_ubuntu_2004_arm_64);
 
-    new cdk.CfnOutput(this, 'Key Pair Name', { value: this.keyPair.keyName });
+    new cdk.CfnOutput(this, 'Key Pair Name', { value: this.keyPair.keyPairName });
     new cdk.CfnOutput(this, 'Download Key Command', {
-      value: `aws ssm get-parameter --name /ec2/keypair/${this.keyPair.attrKeyPairId} --with-decryption --query Parameter.Value --output text > ${this.keyPair.keyName}.pem && chmod 400 ${this.keyPair.keyName}.pem`
+      value: `aws ssm get-parameter --name /ec2/keypair/${this.keyPair.keyPairId} --with-decryption --query Parameter.Value --output text > ${this.keyPair.keyPairName}.pem && chmod 400 ${this.keyPair.keyPairName}.pem`
     });
     new cdk.CfnOutput(this, 'Greengrass Core Device Role', { value: this.greengrassRole.roleName });
   }
@@ -82,9 +82,9 @@ export class GreengrassEC2DeviceFarmStack extends cdk.Stack {
     return vpc;
   }
 
-  private createKeyPair(): ec2.CfnKeyPair {
-    return new ec2.CfnKeyPair(this, `${this.stackName}KeyPair`, {
-      keyName: `${this.stackName}`,
+  private createKeyPair(): ec2.KeyPair {
+    return new ec2.KeyPair(this, `${this.stackName}KeyPair`, {
+      keyPairName: `${this.stackName}`,
     });
   }
 
@@ -254,7 +254,7 @@ export class GreengrassEC2DeviceFarmStack extends cdk.Stack {
       instanceType: ec2.InstanceType.of(instanceType, instanceSize),
       machineImage: ami,
       securityGroup: securityGroup,
-      keyName: this.keyPair.keyName,
+      keyPair: this.keyPair,
       role: this.instanceRole,
       userData: this.createUserData(`${this.stackName}-${name}`),
       // Override the AMI root device name to enable encryption for the root device (for AwsSolutions-EC26)
