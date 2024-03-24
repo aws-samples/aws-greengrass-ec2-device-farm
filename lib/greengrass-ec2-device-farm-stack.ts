@@ -36,8 +36,8 @@ export class GreengrassEC2DeviceFarmStack extends cdk.Stack {
 
     const ami_windows_server_2022 = ec2.MachineImage.latestWindows(ec2.WindowsVersion.WINDOWS_SERVER_2022_ENGLISH_CORE_BASE);
     const ami_windows_server_2019 = ec2.MachineImage.latestWindows(ec2.WindowsVersion.WINDOWS_SERVER_2019_ENGLISH_CORE_BASE);
-    const ami_al2_x86_64 = this.getAmazonLinuxAmi(ec2.AmazonLinuxCpuType.X86_64);
-    const ami_al2_arm_64 = this.getAmazonLinuxAmi(ec2.AmazonLinuxCpuType.ARM_64);
+    const ami_al2023_x86_64 = this.getAmazonLinuxAmi(ec2.AmazonLinuxCpuType.X86_64);
+    const ami_al2023_arm_64 = this.getAmazonLinuxAmi(ec2.AmazonLinuxCpuType.ARM_64);
     const ami_ubuntu_2204_x86_64 = this.getUbuntuAmi('22.04', 'amd64');
     const ami_ubuntu_2204_arm_64 = this.getUbuntuAmi('22.04', 'arm64');
     const ami_ubuntu_2004_x86_64 = this.getUbuntuAmi('20.04', 'amd64');
@@ -46,8 +46,8 @@ export class GreengrassEC2DeviceFarmStack extends cdk.Stack {
     // Windows first because it's slowest to come up
     this.createInstance('windows-server-2022', ami_windows_server_2022);
     this.createInstance('windows-server-2019', ami_windows_server_2019);
-    this.createInstance('al2-x86-64', ami_al2_x86_64);
-    this.createInstance('al2-arm-64', ami_al2_arm_64);
+    this.createInstance('al2023-x86-64', ami_al2023_x86_64);
+    this.createInstance('al2023-arm-64', ami_al2023_arm_64);
     this.createInstance('ubuntu-22-04-x86-64', ami_ubuntu_2204_x86_64);
     this.createInstance('ubuntu-22-04-arm-64', ami_ubuntu_2204_arm_64);
     this.createInstance('ubuntu-20-04-x86-64', ami_ubuntu_2004_x86_64);
@@ -227,7 +227,7 @@ export class GreengrassEC2DeviceFarmStack extends cdk.Stack {
   }
 
   private getAmazonLinuxAmi(cpuType: ec2.AmazonLinuxCpuType): ec2.IMachineImage {
-    return ec2.MachineImage.latestAmazonLinux2({
+    return ec2.MachineImage.latestAmazonLinux2023({
       cpuType: cpuType
     });
   }
@@ -246,7 +246,7 @@ export class GreengrassEC2DeviceFarmStack extends cdk.Stack {
     const securityGroup = name.includes('windows') ? this.windowsSecurityGroup : this.linuxSecurityGroup;
     // Set volume sizes and root device names that match the AMI defaults
     const volumeSize = name.includes('windows') ? 30 : 8;
-    const rootDeviceName = name.includes('al2') ? '/dev/xvda' : '/dev/sda1';
+    const rootDeviceName = name.includes('al2023') ? '/dev/xvda' : '/dev/sda1';
 
     const ec2Instance = new ec2.Instance(this, `${this.stackName}-${name}`, {
       instanceName: `${this.stackName}-${name}`,
@@ -324,11 +324,14 @@ java -Droot="C:\\greengrass\\v2" "-Dlog.store=FILE"`;
     const ggCodaLinux = '--component-default-user ggc_user:ggc_group';
     const ggCodaWindows = '--component-default-user ggc_user';
     const dockerInstallAmazonLinux = `\
-amazon-linux-extras install docker
+yum install -y docker
 service docker start
 systemctl enable docker
 curl -L https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m) -o /usr/local/bin/docker-compose
 chmod +x /usr/local/bin/docker-compose
+mkdir /usr/local/lib/docker
+mkdir /usr/local/lib/docker/cli-plugins
+cp /usr/local/bin/docker-compose /usr/local/lib/docker/cli-plugins/docker-compose
 usermod -aG docker ec2-user
 usermod -aG docker ggc_user
 newgrp docker`;
@@ -351,8 +354,8 @@ newgrp docker`;
     if (instanceName.includes('windows')) {
       userData = `${baseInstallWindows}\n${ggInstallWindows} ${ggOptions} ${ggCodaWindows}\n</powershell>`;
     } else {
-      const baseInstall = instanceName.includes('al2') ? baseInstallAmazonLinux : baseInstallUbuntu;
-      const dockerInstall = instanceName.includes('al2') ? dockerInstallAmazonLinux : dockerInstallUbuntu;
+      const baseInstall = instanceName.includes('al2023') ? baseInstallAmazonLinux : baseInstallUbuntu;
+      const dockerInstall = instanceName.includes('al2023') ? dockerInstallAmazonLinux : dockerInstallUbuntu;
       userData = `${baseInstall}\n${ggInstallLinux} ${ggOptions} ${ggCodaLinux}\n${dockerInstall}`;
     }
 
