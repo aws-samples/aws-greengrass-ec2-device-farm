@@ -8,8 +8,8 @@ The fleet of instances deployed is as follows.
 
 | Operating System        | Architecture    | Type      |
 | ----------------------- | --------------- | --------- |
-| Amazon Linux 2          | x86_64  (amd64) | t3.small  |
-| Amazon Linux 2          | aarch64 (arm64) | t4g.small |
+| Amazon Linux 2023       | x86_64  (amd64) | t3.small  |
+| Amazon Linux 2023       | aarch64 (arm64) | t4g.small |
 | Ubuntu Server 22.04 LTS | x86_64  (amd64) | t3.small  |
 | Ubuntu Server 22.04 LTS | aarch64 (arm64) | t4g.small |
 | Ubuntu Server 20.04 LTS | x86_64  (amd64) | t3.small  |
