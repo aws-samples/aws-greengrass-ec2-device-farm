@@ -1,13 +1,12 @@
 // Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-import { IoTClient, ListPoliciesCommand, ListTargetsForPolicyCommand, DetachPolicyCommand,
-  DeletePolicyCommand, CreateThingGroupCommand, DescribeThingGroupCommand, ListThingPrincipalsCommand,
-  DetachThingPrincipalCommand, UpdateCertificateCommand, DeleteCertificateCommand, DeleteThingCommand,
-  DeleteThingGroupCommand, ListRoleAliasesCommand, DeleteRoleAliasCommand } from '@aws-sdk/client-iot';
-import { GreengrassV2Client, ListCoreDevicesCommand, DeleteCoreDeviceCommand,
+import { IoTClient, ListThingsInThingGroupCommand, ListThingPrincipalsCommand,
+  DetachThingPrincipalCommand, ListAttachedPoliciesCommand, DetachPolicyCommand,
+  UpdateCertificateCommand, DeleteCertificateCommand, DeleteThingCommand } from '@aws-sdk/client-iot';
+import { GreengrassV2Client, DeleteCoreDeviceCommand,
   ListDeploymentsCommand, CancelDeploymentCommand, DeleteDeploymentCommand,
-  CreateDeploymentCommand } from '@aws-sdk/client-greengrassv2';
+  CreateDeploymentCommand, ListComponentVersionsCommand } from '@aws-sdk/client-greengrassv2';
 
 const iot = new IoTClient();
 const greengrassv2 = new GreengrassV2Client();
@@ -37,96 +36,81 @@ async function retryOnThrottle<T>(fn: () => Promise<T>): Promise<T> {
   return fn();
 }
 
-async function deletePolicies(farmName: string): Promise<void> {
-  console.log('Getting IoT policies in the account');
-  try {
-    const response = await iot.send(new ListPoliciesCommand({}));
-    const policies = response.policies || [];
-
-    for (const policy of policies) {
-      const policyName = policy.policyName!;
-      if (policyName.includes(farmName)) {
-        console.log(`  Getting targets for policy ${policyName}`);
-        const targets = (await iot.send(
-          new ListTargetsForPolicyCommand({ policyName }))).targets || [];
-
-        for (const target of targets) {
-          console.log(`  Detaching policy ${policyName} from target`);
-          await iot.send(new DetachPolicyCommand({ policyName, target }));
-        }
-
-        console.log(`  Deleting policy ${policyName}`);
-        await iot.send(new DeletePolicyCommand({ policyName }));
-      }
-    }
-  } catch (e: any) {
-    console.log(`  Error processing policies: ${e.message}`);
-  }
+async function listThingsInGroup(thingGroupName: string): Promise<string[]> {
+  const things: string[] = [];
+  let nextToken: string | undefined;
+  do {
+    const response: any = await iot.send(new ListThingsInThingGroupCommand({
+      thingGroupName, nextToken }));
+    things.push(...(response.things || []));
+    nextToken = response.nextToken;
+  } while (nextToken);
+  return things;
 }
 
-async function deleteCoreDevices(farmName: string, thingGroupArn: string): Promise<void> {
-  console.log('Getting core devices in the thing group');
-  try {
-    const response = await greengrassv2.send(
-      new ListCoreDevicesCommand({ thingGroupArn }));
-    const coreDevices = response.coreDevices || [];
+// Detach every policy attached to the certificate
+async function detachAllPolicies(certificateArn: string): Promise<void> {
+  let marker: string | undefined;
+  do {
+    const response: any = await iot.send(new ListAttachedPoliciesCommand({
+      target: certificateArn, marker }));
+    for (const policy of response.policies || []) {
+      console.log(`  Detaching policy ${policy.policyName} from certificate`);
+      await iot.send(new DetachPolicyCommand({
+        policyName: policy.policyName!, target: certificateArn }));
+    }
+    marker = response.nextMarker;
+  } while (marker);
+}
 
-    for (const coreDevice of coreDevices) {
-      const thingName = coreDevice.coreDeviceThingName!;
+// Delete every thing in the thing group, and (if present) its Greengrass core device
+async function deleteThings(thingGroupName: string): Promise<void> {
+  console.log('Getting things in the thing group');
+  let thingNames: string[];
+  try {
+    thingNames = await listThingsInGroup(thingGroupName);
+  } catch (e: any) {
+    console.log(`  Error listing things in thing group: ${e.message}`);
+    return;
+  }
+
+  for (const thingName of thingNames) {
+    try {
+      console.log(`  Getting principals for thing ${thingName}`);
+      const principals = (await iot.send(
+        new ListThingPrincipalsCommand({ thingName }))).principals || [];
+
+      for (const principal of principals) {
+        console.log(`  Detaching principal from thing ${thingName}`);
+        await iot.send(new DetachThingPrincipalCommand({ thingName, principal }));
+
+        if (principal.includes('cert')) {
+          const certificateId = principal.split('cert/')[1];
+          await detachAllPolicies(principal);
+          console.log(`  Deactivating certificate ${certificateId}`);
+          await iot.send(new UpdateCertificateCommand({
+            certificateId, newStatus: 'INACTIVE' }));
+          console.log(`  Deleting certificate ${certificateId}`);
+          await iot.send(new DeleteCertificateCommand({ certificateId }));
+        }
+      }
+
+      console.log(`  Deleting core device (if any) for thing ${thingName}`);
       try {
-        console.log(`  Getting principals for thing ${thingName}`);
-        const principals = (await iot.send(
-          new ListThingPrincipalsCommand({ thingName }))).principals || [];
-
-        for (const principal of principals) {
-          console.log(`  Detaching principal from thing ${thingName}`);
-          await iot.send(new DetachThingPrincipalCommand({ thingName, principal }));
-
-          if (principal.includes('cert')) {
-            const certificateId = principal.split('cert/')[1];
-            console.log(`  Deactivating certificate ${certificateId}`);
-            await iot.send(new UpdateCertificateCommand({
-              certificateId, newStatus: 'INACTIVE' }));
-            console.log(`  Deleting certificate ${certificateId}`);
-            await iot.send(new DeleteCertificateCommand({ certificateId }));
-          }
-        }
-
-        console.log(`  Deleting core device and thing ${thingName}`);
         await greengrassv2.send(new DeleteCoreDeviceCommand({ coreDeviceThingName: thingName }));
-        await iot.send(new DeleteThingCommand({ thingName }));
       } catch (e: any) {
-        console.log(`  Error processing thing ${thingName}: ${e.message}`);
+        if (e.name === 'ResourceNotFoundException') {
+          console.log(`  No core device for thing ${thingName}, skipping`);
+        } else {
+          throw e;
+        }
       }
+
+      console.log(`  Deleting thing ${thingName}`);
+      await iot.send(new DeleteThingCommand({ thingName }));
+    } catch (e: any) {
+      console.log(`  Error processing thing ${thingName}: ${e.message}`);
     }
-  } catch (e: any) {
-    console.log(`  Error listing core devices: ${e.message}`);
-  }
-}
-
-async function deleteThingGroup(farmName: string): Promise<void> {
-  console.log(`Deleting thing group ${farmName}`);
-  try {
-    await iot.send(new DeleteThingGroupCommand({ thingGroupName: farmName }));
-  } catch (e: any) {
-    console.log(`  Error deleting thing group: ${e.message}`);
-  }
-}
-
-async function deleteRoleAliases(farmName: string): Promise<void> {
-  console.log('Getting role aliases');
-  try {
-    const response = await iot.send(new ListRoleAliasesCommand({}));
-    const roleAliases = response.roleAliases || [];
-
-    for (const roleAlias of roleAliases) {
-      if (roleAlias.startsWith(farmName)) {
-        console.log(`  Deleting role alias ${roleAlias}`);
-        await iot.send(new DeleteRoleAliasCommand({ roleAlias }));
-      }
-    }
-  } catch (e: any) {
-    console.log(`  Error processing role aliases: ${e.message}`);
   }
 }
 
@@ -153,36 +137,33 @@ async function deleteDeployments(thingGroupArn: string): Promise<void> {
       console.log(`  Canceling deployment ${deploymentId}`);
       await retryOnThrottle(() =>
         greengrassv2.send(new CancelDeploymentCommand({ deploymentId })));
+    } catch (e: any) {
+      console.log(`  Cancel skipped/failed for ${deploymentId}: ${e.message}`);
+    }
+    try {
       console.log(`  Deleting deployment ${deploymentId}`);
       await retryOnThrottle(() =>
         greengrassv2.send(new DeleteDeploymentCommand({ deploymentId })));
       await sleep(2000);
     } catch (e: any) {
-      console.log(`  Error processing deployment ${deploymentId}: ${e.message}`);
+      console.log(`  Error deleting deployment ${deploymentId}: ${e.message}`);
     }
   }
 }
 
-async function createThingGroupAndDeployment(farmName: string, nucleusConfig: string): Promise<string> {
-  console.log(`Creating thing group ${farmName}`);
-  const thingGroupResponse = await iot.send(new CreateThingGroupCommand({
-    thingGroupName: farmName,
-  }));
-  const thingGroupArn = thingGroupResponse.thingGroupArn!;
-
+async function createDeployment(thingGroupArn: string, deploymentName: string, nucleusConfig: string): Promise<void> {
   // Look up the latest Nucleus version (CLI uses the same version)
   const region = process.env.AWS_REGION;
-  const { ListComponentVersionsCommand } = await import('@aws-sdk/client-greengrassv2');
 
   const nucleusArn = `arn:aws:greengrass:${region}:aws:components:aws.greengrass.Nucleus`;
   const nucleusVersions = await greengrassv2.send(new ListComponentVersionsCommand({ arn: nucleusArn }));
   const nucleusVersion = nucleusVersions.componentVersions![0].componentVersion!;
   console.log(`Latest Nucleus version: ${nucleusVersion}`);
 
-  console.log(`Creating Greengrass deployment for ${farmName}`);
+  console.log(`Creating Greengrass deployment: ${deploymentName}`);
   const deploymentResponse = await greengrassv2.send(new CreateDeploymentCommand({
     targetArn: thingGroupArn,
-    deploymentName: `Deployment for ${farmName}`,
+    deploymentName: deploymentName,
     components: {
       'aws.greengrass.Nucleus': {
         componentVersion: nucleusVersion,
@@ -196,8 +177,6 @@ async function createThingGroupAndDeployment(farmName: string, nucleusConfig: st
     },
   }));
   console.log(`Created deployment ${deploymentResponse.deploymentId}`);
-
-  return thingGroupArn;
 }
 
 export async function handler(event: any): Promise<any> {
@@ -205,13 +184,14 @@ export async function handler(event: any): Promise<any> {
 
   const requestType = event.RequestType;
   const farmName = event.ResourceProperties.FarmName;
+  const thingGroupArn = event.ResourceProperties.ThingGroupArn;
   const nucleusConfig = event.ResourceProperties.NucleusConfig;
 
   if (requestType === 'Create') {
-    console.log(`Creating IoT resources for ${farmName}`);
-    const thingGroupArn = await createThingGroupAndDeployment(farmName, nucleusConfig);
+    console.log(`Creating Greengrass deployment for ${farmName}`);
+    await createDeployment(thingGroupArn, `Deployment for ${farmName}`, nucleusConfig);
     console.log('Create complete.');
-    return { PhysicalResourceId: farmName, Data: { ThingGroupArn: thingGroupArn } };
+    return { PhysicalResourceId: farmName };
   }
 
   if (requestType === 'Update') {
@@ -222,26 +202,8 @@ export async function handler(event: any): Promise<any> {
   if (requestType === 'Delete') {
     console.log(`Cleaning up IoT resources for ${farmName}`);
 
-    // Get the thing group ARN
-    let thingGroupArn: string;
-    try {
-      const response = await iot.send(new DescribeThingGroupCommand({ thingGroupName: farmName }));
-      thingGroupArn = response.thingGroupArn!;
-    } catch (e: any) {
-      if (e.name === 'ResourceNotFoundException') {
-        console.log(`Thing group ${farmName} not found. Constructing ARN.`);
-        const region = process.env.AWS_REGION;
-        const accountId = event.ServiceToken.split(':')[4];
-        thingGroupArn = `arn:aws:iot:${region}:${accountId}:thinggroup/${farmName}`;
-      } else {
-        throw e;
-      }
-    }
-
-    await deletePolicies(farmName);
-    await deleteCoreDevices(farmName, thingGroupArn);
-    await deleteThingGroup(farmName);
-    await deleteRoleAliases(farmName);
+    // The thing group name equals the farm name
+    await deleteThings(farmName);
     await deleteDeployments(thingGroupArn);
 
     console.log('Clean-up complete.');

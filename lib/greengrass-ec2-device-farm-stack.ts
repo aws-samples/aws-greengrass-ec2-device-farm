@@ -5,6 +5,7 @@ import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as iam from 'aws-cdk-lib/aws-iam';
+import * as iot from 'aws-cdk-lib/aws-iot';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as cr from 'aws-cdk-lib/custom-resources';
 import { NodejsFunction } from 'aws-cdk-lib/aws-lambda-nodejs';
@@ -17,7 +18,10 @@ export class GreengrassEC2DeviceFarmStack extends cdk.Stack {
   vpc: cdk.aws_ec2.IVpc;
   instanceRole: iam.Role;
   greengrassRole: iam.Role;
-  greengrassPolicy: iam.ManagedPolicy;
+  greengrassRoleAlias: iot.CfnRoleAlias;
+  greengrassRolePolicy: iam.ManagedPolicy;
+  iotThingPolicy: iot.CfnPolicy;
+  thingGroup: iot.CfnThingGroup;
   keyPair: ec2.KeyPair;
 
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -31,8 +35,12 @@ export class GreengrassEC2DeviceFarmStack extends cdk.Stack {
     this.windowsSecurityGroup = this.createSecurityGroup('Windows');
 
     this.greengrassRole = this.createGreengrassTokenExchangeRole();
-    this.greengrassPolicy = this.createGreengrassTokenExchangePolicy();
-    this.greengrassRole.addManagedPolicy(this.greengrassPolicy);
+    this.greengrassRolePolicy = this.createGreengrassTokenExchangePolicy();
+    this.greengrassRole.addManagedPolicy(this.greengrassRolePolicy);
+    this.greengrassRoleAlias = this.createRoleAlias();
+    this.iotThingPolicy = this.createIotThingPolicy();
+
+    this.thingGroup = this.createThingGroup();
 
     // All instances use the same EC2 role. It grants permissions for the Greengrass installer.
     this.instanceRole = this.createInstanceRole();
@@ -75,28 +83,22 @@ export class GreengrassEC2DeviceFarmStack extends cdk.Stack {
     lifecycleFn.addToRolePolicy(new iam.PolicyStatement({
       actions: [
         // Create actions
-        'iot:CreateThingGroup',
-        'iot:CreateJob',
         'greengrass:CreateDeployment',
         'greengrass:ListComponentVersions',
-        'greengrass:ListCoreDevices',
-        // Delete actions
-        'iot:ListPolicies',
-        'iot:ListTargetsForPolicy',
-        'iot:DetachPolicy',
-        'iot:DeletePolicy',
         'iot:DescribeThingGroup',
+        'iot:CreateJob',
+        'iot:DescribeJob',
+        // Delete actions
+        'iot:ListThingsInThingGroup',
         'iot:ListThingPrincipals',
+        'iot:ListAttachedPolicies',
+        'iot:DetachPolicy',
         'iot:DetachThingPrincipal',
         'iot:UpdateCertificate',
         'iot:DeleteCertificate',
         'iot:DeleteThing',
-        'iot:DeleteThingGroup',
-        'iot:ListRoleAliases',
-        'iot:DeleteRoleAlias',
         'iot:CancelJob',
         'iot:DeleteJob',
-        'iot:DescribeJob',
         'greengrass:DeleteCoreDevice',
         'greengrass:ListDeployments',
         'greengrass:CancelDeployment',
@@ -139,16 +141,20 @@ export class GreengrassEC2DeviceFarmStack extends cdk.Stack {
       }
     ], true)
 
-    new cdk.CustomResource(this, `${this.stackName}LifecycleResource`, {
+    const lifecycleResource = new cdk.CustomResource(this, `${this.stackName}LifecycleResource`, {
       serviceToken: provider.serviceToken,
       properties: {
         FarmName: this.stackName,
+        ThingGroupArn: this.thingGroup.attrArn,
         NucleusConfig: JSON.stringify({
           interpolateComponentConfiguration: 'true',
           greengrassDataPlaneEndpoint: 'iotdata',
         }),
       },
     });
+
+    lifecycleResource.node.addDependency(this.iotThingPolicy);
+    lifecycleResource.node.addDependency(this.greengrassRoleAlias);
   }
 
   private createVpc(): ec2.Vpc {
@@ -212,55 +218,21 @@ export class GreengrassEC2DeviceFarmStack extends cdk.Stack {
       }
     ])
 
-    // Create and add the permissions needed by the Greengrass automatic provisioning.
-    // https://docs.aws.amazon.com/greengrass/v2/developerguide/provision-minimal-iam-policy.html
+    // Create and add the permissions needed by the Greengrass manual provisioning
+    // https://docs.aws.amazon.com/greengrass/v2/developerguide/manual-installation.html
     const minimalInstallerPolicy = new iam.Policy(this, `${this.stackName}InstallerPolicy`, {
       statements: [
-        new iam.PolicyStatement({
-          actions: [
-            'iam:AttachRolePolicy',
-            'iam:CreatePolicy',
-            'iam:CreateRole',
-            'iam:GetPolicy',
-            'iam:GetRole',
-            'iam:PassRole'
-          ],
-          resources: [`${this.greengrassRole.roleArn}`, `${this.greengrassPolicy.managedPolicyArn}`],
-          effect: iam.Effect.ALLOW
-        }),
         new iam.PolicyStatement({
           actions: [
             'iot:AddThingToThingGroup',
             'iot:AttachPolicy',
             'iot:AttachThingPrincipal',
             'iot:CreateKeysAndCertificate',
-            'iot:CreatePolicy',
-            'iot:CreateRoleAlias',
             'iot:CreateThing',
-            'iot:CreateThingGroup',
-            'iot:DescribeEndpoint',
-            'iot:DescribeRoleAlias',
-            'iot:DescribeThingGroup',
-            'iot:GetPolicy'
+            'iot:DescribeEndpoint'
           ],
           resources: ['*'],
           effect: iam.Effect.ALLOW
-        }),
-        new iam.PolicyStatement({
-          actions: [
-            'greengrass:CreateDeployment',
-            'iot:CancelJob',
-            'iot:CreateJob',
-            'iot:DeleteThingShadow',
-            'iot:DescribeJob',
-            'iot:DescribeThing',
-            'iot:DescribeThingGroup',
-            'iot:GetThingShadow',
-            'iot:UpdateJob',
-            'iot:UpdateThingShadow'
-          ],
-          effect: iam.Effect.ALLOW,
-          resources: ['*']
         })
       ]
     });
@@ -268,7 +240,7 @@ export class GreengrassEC2DeviceFarmStack extends cdk.Stack {
     NagSuppressions.addResourceSuppressions(minimalInstallerPolicy, [
       {
         id: 'AwsSolutions-IAM5',
-        reason: 'Resource wildcards as documented for the minimal automatic provisioning policy.'
+        reason: 'Resource wildcards as documented for the minimal provisioning policy.'
       }
     ])
 
@@ -321,6 +293,57 @@ export class GreengrassEC2DeviceFarmStack extends cdk.Stack {
     ])
 
     return policy;
+  }
+
+  private createRoleAlias(): iot.CfnRoleAlias {
+    return new iot.CfnRoleAlias(this, `${this.stackName}RoleAlias`, {
+      roleAlias: `${this.stackName}TokenExchangeRoleAlias`,
+      roleArn: this.greengrassRole.roleArn,
+    });
+  }
+
+  private createIotThingPolicy(): iot.CfnPolicy {
+    const roleAliasArn = cdk.Stack.of(this).formatArn({
+      service: 'iot',
+      resource: 'rolealias',
+      resourceName: this.greengrassRoleAlias.roleAlias!,
+    });
+
+    const policy = new iot.CfnPolicy(this, `${this.stackName}IotThingPolicy`, {
+      policyName: this.stackName,
+      policyDocument: {
+        Version: '2012-10-17',
+        Statement: [
+          {
+            Effect: 'Allow',
+            Action: [
+              'iot:Connect',
+              'iot:Publish',
+              'iot:Subscribe',
+              'iot:Receive',
+              'greengrass:*',
+            ],
+            Resource: '*',
+          },
+          {
+            Effect: 'Allow',
+            Action: 'iot:AssumeRoleWithCertificate',
+            Resource: roleAliasArn,
+          },
+        ],
+      },
+    });
+
+    // The role alias must exist before the policy references its ARN.
+    policy.addResourceDependency(this.greengrassRoleAlias);
+
+    return policy;
+  }
+
+  private createThingGroup(): iot.CfnThingGroup {
+    return new iot.CfnThingGroup(this, `${this.stackName}ThingGroup`, {
+      thingGroupName: this.stackName,
+    });
   }
 
   private getAmazonLinuxAmi(cpuType: ec2.AmazonLinuxCpuType): ec2.IMachineImage {
@@ -378,23 +401,79 @@ export class GreengrassEC2DeviceFarmStack extends cdk.Stack {
   }
 
   private createUserData(instanceName: string) : ec2.UserData {
+    const region = this.region;
+    const thingGroupName = this.stackName;
+    const policyName = this.iotThingPolicy.policyName!;
+    const roleAliasName = this.greengrassRoleAlias.roleAlias!;
+
     const baseInstallAmazonLinux = `\
 #!/bin/bash
-yum update -y
-yum install -y java
+set -euxo pipefail
+# A background 'dnf makecache' timer can run at boot and briefly hold the dnf lock (or
+# invalidate metadata) while our install runs. Retry each transient package operation.
+retry() {
+  local n=0
+  until "\$@"; do
+    n=\$((n + 1))
+    if [ "\$n" -ge 10 ]; then
+      echo "Command failed after \$n attempts: \$*" >&2
+      return 1
+    fi
+    echo "Attempt \$n failed: \$* -- retrying in 15s" >&2
+    sleep 15
+  done
+}
+retry yum update -y
+retry yum install -y java
 # Install tools needed to build wheels for some components (like Device Defender)
-yum install -y gcc python3-devel
+retry yum install -y gcc python3-devel
 echo "root ALL=(ALL:ALL) ALL" > /etc/sudoers.d/gg-root-runas-all`;
+
     const baseInstallUbuntu = `\
 #!/bin/bash
-apt update
-apt install -y default-jre unzip python3-pip python3-venv
-# Ubuntu 26.04+ ships sudo-rs which does not support the -E flag used by Greengrass nucleus.
-# Install and switch to the classic sudo implementation.
-apt install -y sudo.ws
+set -euxo pipefail
+# On this image, boot-time apt patching (unattended-upgrades / apt-daily) starts within a
+# second and holds the apt lists lock for minutes -- long enough to block our provisioning.
+# Pause it for the duration, wait for any in-flight run to release the lock, provision, then
+# re-enable it at the very end.
+export DEBIAN_FRONTEND=noninteractive
+APT_OPTS="-o DPkg::Lock::Timeout=300 -o Acquire::Retries=5 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30"
+systemctl stop unattended-upgrades.service apt-daily.service apt-daily-upgrade.service 2>/dev/null || true
+systemctl stop apt-daily.timer apt-daily-upgrade.timer 2>/dev/null || true
+wait_apt_lock() {
+  local waited=0
+  while fuser /var/lib/apt/lists/lock /var/lib/dpkg/lock /var/lib/dpkg/lock-frontend >/dev/null 2>&1; do
+    if [ "\$waited" -ge 300 ]; then
+      echo "Timed out waiting for apt locks to be released" >&2
+      break
+    fi
+    echo "Waiting for apt locks to be released..." >&2
+    sleep 5
+    waited=\$((waited + 5))
+  done
+}
+retry() {
+  local n=0
+  until "\$@"; do
+    n=\$((n + 1))
+    if [ "\$n" -ge 10 ]; then
+      echo "Command failed after \$n attempts: \$*" >&2
+      return 1
+    fi
+    echo "Attempt \$n failed: \$* -- retrying in 15s" >&2
+    sleep 15
+  done
+}
+wait_apt_lock
+retry apt-get \${APT_OPTS} update
+retry apt-get \${APT_OPTS} install -y default-jre-headless unzip python3-pip python3-venv awscli
+# Ubuntu 26.04+ ships sudo-rs as the default sudo, which does not support the -E flag
+# used by the Greengrass nucleus. The classic sudo is provided by the "sudo" package.
+retry apt-get \${APT_OPTS} install -y sudo
 update-alternatives --set sudo /usr/bin/sudo.ws`;
     const baseInstallWindows = `\
 <powershell>
+$ErrorActionPreference = "Stop"
 cd ~
 iex ((New-Object System.Net.WebClient).DownloadString('https://chocolatey.org/install.ps1'))
 choco install -y python3 --version=3.11.8
@@ -407,25 +486,109 @@ wmic UserAccount where "Name='ggc_user'" set PasswordExpires=False
 choco install -y psexec
 psexec /accepteula -s cmd /c cmdkey /generic:ggc_user /user:ggc_user /pass:$env:PASSWORD
 choco uninstall -y psexec`;
+
+    const manualProvisionLinux = `\
+GG_ROOT="/greengrass/v2"
+mkdir -p "\${GG_ROOT}" GreengrassInstaller
+
+DATA_ENDPOINT=$(aws iot describe-endpoint --endpoint-type iot:Data-ATS --region ${region} --query endpointAddress --output text)
+CRED_ENDPOINT=$(aws iot describe-endpoint --endpoint-type iot:CredentialProvider --region ${region} --query endpointAddress --output text)
+
+aws iot create-thing --thing-name ${instanceName} --region ${region}
+
+CERT_ARN=$(aws iot create-keys-and-certificate --set-as-active --region ${region} \\
+  --certificate-pem-outfile "\${GG_ROOT}/device.pem.crt" \\
+  --public-key-outfile "\${GG_ROOT}/public.pem.key" \\
+  --private-key-outfile "\${GG_ROOT}/private.pem.key" \\
+  --query certificateArn --output text)
+chmod 600 "\${GG_ROOT}/private.pem.key"
+
+curl -fsSL https://www.amazontrust.com/repository/AmazonRootCA1.pem -o "\${GG_ROOT}/AmazonRootCA1.pem"
+
+aws iot attach-thing-principal --thing-name ${instanceName} --principal "\${CERT_ARN}" --region ${region}
+aws iot attach-policy --policy-name ${policyName} --target "\${CERT_ARN}" --region ${region}
+
+aws iot add-thing-to-thing-group --thing-name ${instanceName} --thing-group-name ${thingGroupName} --region ${region}
+
+cat > GreengrassInstaller/config.yaml <<EOF
+---
+system:
+  certificateFilePath: "\${GG_ROOT}/device.pem.crt"
+  privateKeyPath: "\${GG_ROOT}/private.pem.key"
+  rootCaPath: "\${GG_ROOT}/AmazonRootCA1.pem"
+  rootpath: "\${GG_ROOT}"
+  thingName: "${instanceName}"
+services:
+  aws.greengrass.Nucleus:
+    componentType: "NUCLEUS"
+    configuration:
+      awsRegion: "${region}"
+      iotRoleAlias: "${roleAliasName}"
+      iotDataEndpoint: "\${DATA_ENDPOINT}"
+      iotCredEndpoint: "\${CRED_ENDPOINT}"
+EOF`;
+
     const ggInstallLinux = `\
 curl -s https://d2s8p88vqu9w66.cloudfront.net/releases/greengrass-nucleus-latest.zip > greengrass-nucleus-latest.zip
-unzip greengrass-nucleus-latest.zip -d GreengrassInstaller
-java -Droot="/greengrass/v2" -Dlog.store=FILE -jar`;
-    const ggInstallWindows = `\
+unzip -o greengrass-nucleus-latest.zip -d GreengrassInstaller
+java -Droot="/greengrass/v2" -Dlog.store=FILE \\
+  -jar ./GreengrassInstaller/lib/Greengrass.jar \\
+  --init-config ./GreengrassInstaller/config.yaml \\
+  --component-default-user ggc_user:ggc_group \\
+  --provision false --setup-system-service true`;
+
+    const manualProvisionAndInstallWindows = `\
+$GG_ROOT = "C:\\greengrass\\v2"
+New-Item -ItemType Directory -Force -Path $GG_ROOT | Out-Null
+New-Item -ItemType Directory -Force -Path .\\GreengrassInstaller | Out-Null
+
+$DATA_ENDPOINT = (aws iot describe-endpoint --endpoint-type iot:Data-ATS --region ${region} --query endpointAddress --output text)
+$CRED_ENDPOINT = (aws iot describe-endpoint --endpoint-type iot:CredentialProvider --region ${region} --query endpointAddress --output text)
+
+aws iot create-thing --thing-name ${instanceName} --region ${region}
+
+$CERT_ARN = (aws iot create-keys-and-certificate --set-as-active --region ${region} \`
+  --certificate-pem-outfile "$GG_ROOT\\device.pem.crt" \`
+  --public-key-outfile "$GG_ROOT\\public.pem.key" \`
+  --private-key-outfile "$GG_ROOT\\private.pem.key" \`
+  --query certificateArn --output text)
+
+Invoke-WebRequest -UseBasicParsing "https://www.amazontrust.com/repository/AmazonRootCA1.pem" -OutFile "$GG_ROOT\\AmazonRootCA1.pem"
+
+aws iot attach-thing-principal --thing-name ${instanceName} --principal "$CERT_ARN" --region ${region}
+aws iot attach-policy --policy-name ${policyName} --target "$CERT_ARN" --region ${region}
+
+aws iot add-thing-to-thing-group --thing-name ${instanceName} --thing-group-name ${thingGroupName} --region ${region}
+
+$CONFIG = @"
+---
+system:
+  certificateFilePath: '$GG_ROOT\\device.pem.crt'
+  privateKeyPath: '$GG_ROOT\\private.pem.key'
+  rootCaPath: '$GG_ROOT\\AmazonRootCA1.pem'
+  rootpath: '$GG_ROOT'
+  thingName: "${instanceName}"
+services:
+  aws.greengrass.Nucleus:
+    componentType: "NUCLEUS"
+    configuration:
+      awsRegion: "${region}"
+      iotRoleAlias: "${roleAliasName}"
+      iotDataEndpoint: "$DATA_ENDPOINT"
+      iotCredEndpoint: "$CRED_ENDPOINT"
+"@
+Set-Content -Path .\\GreengrassInstaller\\config.yaml -Value $CONFIG -Encoding ascii
+
 Invoke-WebRequest -UseBasicParsing "https://d2s8p88vqu9w66.cloudfront.net/releases/greengrass-nucleus-latest.zip" -o greengrass-nucleus-latest.zip
-mkdir GreengrassInstaller
 tar -xf greengrass-nucleus-latest.zip -C GreengrassInstaller
-java -Droot="C:\\greengrass\\v2" "-Dlog.store=FILE"`;
-    const ggOptions = `\
--jar ./GreengrassInstaller/lib/Greengrass.jar \
---aws-region ${this.region} --thing-name ${instanceName} --thing-group-name ${this.stackName} \
---thing-policy-name ${this.stackName} --tes-role-name ${this.greengrassRole.roleName} \
---tes-role-alias-name ${this.greengrassRole.roleName}Alias \
---provision true --setup-system-service true`;
-    const ggCodaLinux = '--component-default-user ggc_user:ggc_group';
-    const ggCodaWindows = '--component-default-user ggc_user';
+java -Droot="C:\\greengrass\\v2" "-Dlog.store=FILE" \`
+  -jar ./GreengrassInstaller/lib/Greengrass.jar \`
+  --init-config ./GreengrassInstaller/config.yaml \`
+  --component-default-user ggc_user \`
+  --provision false --setup-system-service true`;
+
     const dockerInstallAmazonLinux = `\
-yum install -y docker
+retry yum install -y docker
 service docker start
 systemctl enable docker
 curl -L https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m) -o /usr/local/bin/docker-compose
@@ -437,27 +600,30 @@ usermod -aG docker ec2-user
 usermod -aG docker ggc_user
 newgrp docker`;
     const dockerInstallUbuntu = `\
-apt install -y ca-certificates curl gnupg lsb-release
+retry apt-get \${APT_OPTS} install -y ca-certificates curl gnupg lsb-release
 mkdir -p /etc/apt/keyrings
 curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
 echo \
 "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu \
 $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
-apt update
-apt install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
+retry apt-get \${APT_OPTS} update
+retry apt-get \${APT_OPTS} install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
 curl -fL https://raw.githubusercontent.com/docker/compose-switch/master/install_on_linux.sh | sh
 usermod -aG docker ubuntu
 usermod -aG docker ggc_user
+# Provisioning is complete: re-enable the boot-time apt patching timers that were paused at
+# the start, so the instance auto-patches over its lifetime (on the normal daily schedule).
+systemctl start apt-daily.timer apt-daily-upgrade.timer 2>/dev/null || true
 newgrp docker`;
 
     var userData: string;
 
     if (instanceName.includes('windows')) {
-      userData = `${baseInstallWindows}\n${ggInstallWindows} ${ggOptions} ${ggCodaWindows}\n</powershell>`;
+      userData = `${baseInstallWindows}\n${manualProvisionAndInstallWindows}\n</powershell>`;
     } else {
       const baseInstall = instanceName.includes('al2023') ? baseInstallAmazonLinux : baseInstallUbuntu;
       const dockerInstall = instanceName.includes('al2023') ? dockerInstallAmazonLinux : dockerInstallUbuntu;
-      userData = `${baseInstall}\n${ggInstallLinux} ${ggOptions} ${ggCodaLinux}\n${dockerInstall}`;
+      userData = `${baseInstall}\n${manualProvisionLinux}\n${ggInstallLinux}\n${dockerInstall}`;
     }
 
     return ec2.UserData.custom(userData);
