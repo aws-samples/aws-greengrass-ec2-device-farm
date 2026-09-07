@@ -6,15 +6,19 @@ This [AWS Cloud Development Kit (CDK v2)](https://docs.aws.amazon.com/cdk/v2/gui
 
 The fleet of instances deployed is as follows.
 
-| Operating System        | Architecture    | Type      |
-| ----------------------- | --------------- | --------- |
-| Amazon Linux 2023       | x86_64  (amd64) | t3.small  |
-| Amazon Linux 2023       | aarch64 (arm64) | t4g.small |
-| Ubuntu Pro 26.04 LTS    | x86_64  (amd64) | t3.small  |
-| Ubuntu Pro 26.04 LTS    | aarch64 (arm64) | t4g.small |
-| Windows Server 2025     | x86_64  (amd64) | t3.medium |
+| Operating System        | Architecture    | Type       | Greengrass runtime |
+| ----------------------- | --------------- | ---------- | ------------------ |
+| Amazon Linux 2023       | x86_64  (amd64) | t3.small   | Nucleus (Java)     |
+| Amazon Linux 2023       | aarch64 (arm64) | t4g.small  | Nucleus (Java)     |
+| Ubuntu Pro 26.04 LTS    | x86_64  (amd64) | t3.small   | Nucleus (Java)     |
+| Ubuntu Pro 26.04 LTS    | aarch64 (arm64) | t4g.small  | Nucleus (Java)     |
+| Windows Server 2025     | x86_64  (amd64) | t3.medium  | Nucleus (Java)     |
+| Amazon Linux 2023       | x86_64  (amd64) | t3.micro   | Nucleus lite (C)   |
+| Amazon Linux 2023       | aarch64 (arm64) | t4g.micro  | Nucleus lite (C)   |
+| Ubuntu Pro 26.04 LTS    | x86_64  (amd64) | t3.micro   | Nucleus lite (C)   |
+| Ubuntu Pro 26.04 LTS    | aarch64 (arm64) | t4g.micro  | Nucleus lite (C)   |
 
-For each instance, Greengrass is [installed with manual resource provisioning](https://docs.aws.amazon.com/greengrass/v2/developerguide/manual-installation.html) via instance user data.
+For each instance, Greengrass is [installed with manual resource provisioning](https://docs.aws.amazon.com/greengrass/v2/developerguide/manual-installation.html) via instance user data. The nucleus lite instances additionally build [Greengrass nucleus lite](https://github.com/aws-greengrass/aws-greengrass-lite) from source at the latest released tag.
 
 Each Linux instance has an 8GB EBS volume and each Windows instance has a 30GB EBS volume.
 
@@ -96,11 +100,19 @@ cdk destroy
 
 ## Deployment
 
-The application creates an AWS IoT static thing group named **GreengrassEC2DeviceFarm** and a Greengrass deployment named **Deployment for GreengrassEC2DeviceFarm**. You can add your components to this deployment to test them across the range of operating systems and architectures supported by the fleet.
+The application creates three AWS IoT static thing groups:
+
+| Thing group | Members |
+| ----------- | ------- |
+| **GreengrassEC2DeviceFarm** | All instances in the fleet. |
+| **GreengrassEC2DeviceFarm-nucleus** | Only the nucleus (Java) instances. |
+| **GreengrassEC2DeviceFarm-nucleus-lite** | Only the nucleus lite (C) instances. |
+
+You can use these as targets for your deployments to test your components. This CDK application also creates a Greengrass deployment named **Deployment for GreengrassEC2DeviceFarm-nucleus** that targets the **GreengrassEC2DeviceFarm-nucleus** group only. This deployment installs the nucleus CLI and configures the nucleus runtime.
 
 ## Nucleus Configuration
 
-Each core device is initialized with the following Greengrass nucleus configuration:
+Each nucleus (Java) core device is initialized with the following configuration:
 
 | Parameter | Value | Purpose |
 | --------- | ----- | ------- |

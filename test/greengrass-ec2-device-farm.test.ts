@@ -18,8 +18,8 @@ test('Good stack', () => {
     template.resourceCountIs('AWS::IAM::Role', 4);
     template.resourceCountIs('AWS::IAM::Policy', 3);
     template.resourceCountIs('AWS::IAM::ManagedPolicy', 1);
-    template.resourceCountIs('AWS::EC2::Instance', 5);
+    template.resourceCountIs('AWS::EC2::Instance', 9);
     template.resourceCountIs('AWS::IoT::Policy', 1);
     template.resourceCountIs('AWS::IoT::RoleAlias', 1);
-    template.resourceCountIs('AWS::IoT::ThingGroup', 1);
+    template.resourceCountIs('AWS::IoT::ThingGroup', 3);
 });
