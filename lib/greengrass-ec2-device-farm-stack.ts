@@ -481,7 +481,7 @@ chmod 600 "${certDir}/private.pem.key"
 
 curl -fsSL https://www.amazontrust.com/repository/AmazonRootCA1.pem -o "${certDir}/AmazonRootCA1.pem"
 
-aws iot attach-thing-principal --thing-name ${instanceName} --principal "\${CERT_ARN}" --region ${region}
+aws iot attach-thing-principal --thing-name ${instanceName} --principal "\${CERT_ARN}" --thing-principal-type EXCLUSIVE_THING --region ${region}
 aws iot attach-policy --policy-name ${policyName} --target "\${CERT_ARN}" --region ${region}
 
 aws iot add-thing-to-thing-group --thing-name ${instanceName} --thing-group-name ${allThingGroupName} --region ${region}
@@ -624,7 +624,7 @@ $CERT_ARN = (aws iot create-keys-and-certificate --set-as-active --region ${regi
 
 Invoke-WebRequest -UseBasicParsing "https://www.amazontrust.com/repository/AmazonRootCA1.pem" -OutFile "$GG_ROOT\\AmazonRootCA1.pem"
 
-aws iot attach-thing-principal --thing-name ${instanceName} --principal "$CERT_ARN" --region ${region}
+aws iot attach-thing-principal --thing-name ${instanceName} --principal "$CERT_ARN" --thing-principal-type EXCLUSIVE_THING --region ${region}
 aws iot attach-policy --policy-name ${policyName} --target "$CERT_ARN" --region ${region}
 
 aws iot add-thing-to-thing-group --thing-name ${instanceName} --thing-group-name ${allThingGroupName} --region ${region}
