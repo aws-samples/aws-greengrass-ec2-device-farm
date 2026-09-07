@@ -14,7 +14,7 @@ The fleet of instances deployed is as follows.
 | Ubuntu Pro 26.04 LTS    | aarch64 (arm64) | t4g.small |
 | Windows Server 2025     | x86_64  (amd64) | t3.medium |
 
-For each instance, Greengrass is [installed with automatic provisioning](https://docs.aws.amazon.com/greengrass/v2/developerguide/quick-installation.html) via instance user data. 
+For each instance, Greengrass is [installed with manual resource provisioning](https://docs.aws.amazon.com/greengrass/v2/developerguide/manual-installation.html) via instance user data.
 
 Each Linux instance has an 8GB EBS volume and each Windows instance has a 30GB EBS volume.
 
@@ -143,17 +143,14 @@ The stack includes a [VPC Block Public Access](https://docs.aws.amazon.com/vpc/l
 
 # Clean-up
 
-The Greengrass automatic provisioning creates the following resources:
+Some resources are created by commands in EC2 user data or by a Lambda-backed custom resource:
 
 * An AWS IoT Thing for each instance.
 * An AWS IoT X.509 certificate for each thing as the thing principal.
 * A Greengrass core device for each instance.
-* An AWS IoT static thing group named **GreengrassEC2DeviceFarm**.
 * A Greengrass deployment for the thing group.
-* Two AWS IoT thing policies: **GreengrassEC2DeviceFarm** and **GreengrassTESCertificatePolicyGreengrassEC2DeviceFarmTokenExchangeRoleAlias**.
-* A Greengrass token exchange role alias named **GreengrassEC2DeviceFarmTokenExchangeRoleAlias**.
 
-These resources are created at runtime by the Greengrass installer (not by CloudFormation). A Lambda-backed Custom Resource is included in the stack that automatically cleans up these resources when you run `cdk destroy`.
+These resources are deleted by the Lambda-backed Custom Resource included in the stack, when you run `cdk destroy`.
 
 # Troubleshooting
 
@@ -167,12 +164,17 @@ Should any of the Greengrass core devices fail to be created successfully in AWS
 
 ## Windows
 
-```
-C:\ProgramData\Amazon\EC2-Windows\Launch\Log\UserdataExecution.log
-```
-
-Or
+The Windows Server 2025 instance uses **EC2Launch v2**. The agent log records user
+data execution, including whether the script produced error output:
 
 ```
 C:\ProgramData\Amazon\EC2Launch\log\agent.log
+```
+
+The agent log reports only that the script produced error output, not the error
+itself. The user data script that ran, and its captured standard output and error,
+are written under:
+
+```
+C:\ProgramData\Amazon\EC2Launch\state\previous-user-data.ps1
 ```
