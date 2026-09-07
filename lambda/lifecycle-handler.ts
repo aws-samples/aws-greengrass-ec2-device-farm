@@ -63,9 +63,9 @@ async function detachAllPolicies(certificateArn: string): Promise<void> {
   } while (marker);
 }
 
-// Delete every thing in the thing group, and (if present) its Greengrass core device
-async function deleteThings(thingGroupName: string): Promise<void> {
-  console.log('Getting things in the thing group');
+async function deleteThingsInGroup(thingGroupArn: string): Promise<void> {
+  const thingGroupName = thingGroupArn.split('thinggroup/')[1];
+  console.log(`Getting things in thing group ${thingGroupName}`);
   let thingNames: string[];
   try {
     thingNames = await listThingsInGroup(thingGroupName);
@@ -152,13 +152,13 @@ async function deleteDeployments(thingGroupArn: string): Promise<void> {
 }
 
 async function createDeployment(thingGroupArn: string, deploymentName: string, nucleusConfig: string): Promise<void> {
-  // Look up the latest Nucleus version (CLI uses the same version)
+  // Look up the latest nucleus version (CLI uses the same version)
   const region = process.env.AWS_REGION;
 
   const nucleusArn = `arn:aws:greengrass:${region}:aws:components:aws.greengrass.Nucleus`;
   const nucleusVersions = await greengrassv2.send(new ListComponentVersionsCommand({ arn: nucleusArn }));
   const nucleusVersion = nucleusVersions.componentVersions![0].componentVersion!;
-  console.log(`Latest Nucleus version: ${nucleusVersion}`);
+  console.log(`Latest nucleus version: ${nucleusVersion}`);
 
   console.log(`Creating Greengrass deployment: ${deploymentName}`);
   const deploymentResponse = await greengrassv2.send(new CreateDeploymentCommand({
@@ -184,12 +184,13 @@ export async function handler(event: any): Promise<any> {
 
   const requestType = event.RequestType;
   const farmName = event.ResourceProperties.FarmName;
-  const thingGroupArn = event.ResourceProperties.ThingGroupArn;
+  const nucleusThingGroupArn = event.ResourceProperties.NucleusThingGroupArn;
+  const allThingGroupArn = event.ResourceProperties.AllThingGroupArn;
   const nucleusConfig = event.ResourceProperties.NucleusConfig;
 
   if (requestType === 'Create') {
     console.log(`Creating Greengrass deployment for ${farmName}`);
-    await createDeployment(thingGroupArn, `Deployment for ${farmName}`, nucleusConfig);
+    await createDeployment(nucleusThingGroupArn, `Deployment for ${farmName}-nucleus`, nucleusConfig);
     console.log('Create complete.');
     return { PhysicalResourceId: farmName };
   }
@@ -202,9 +203,9 @@ export async function handler(event: any): Promise<any> {
   if (requestType === 'Delete') {
     console.log(`Cleaning up IoT resources for ${farmName}`);
 
-    // The thing group name equals the farm name
-    await deleteThings(farmName);
-    await deleteDeployments(thingGroupArn);
+    // Delete every thing in the fleet (all-group), then the deployment on the nucleus group.
+    await deleteThingsInGroup(allThingGroupArn);
+    await deleteDeployments(nucleusThingGroupArn);
 
     console.log('Clean-up complete.');
     return { PhysicalResourceId: farmName };
