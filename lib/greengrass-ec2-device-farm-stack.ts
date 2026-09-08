@@ -32,7 +32,7 @@ export class GreengrassEC2DeviceFarmStack extends cdk.Stack {
     super(scope, id, props);
 
     this.vpc = this.createVpc();
-    
+
     this.keyPair = this.createKeyPair();
 
     this.linuxSecurityGroup = this.createSecurityGroup('Linux');
@@ -221,7 +221,7 @@ export class GreengrassEC2DeviceFarmStack extends cdk.Stack {
     });
 
     role.addManagedPolicy(iam.ManagedPolicy.fromAwsManagedPolicyName('AmazonSSMManagedInstanceCore'));
-  
+
     NagSuppressions.addResourceSuppressions(role, [
       {
         id: 'AwsSolutions-IAM4',
@@ -268,30 +268,73 @@ export class GreengrassEC2DeviceFarmStack extends cdk.Stack {
   }
 
   private createGreengrassTokenExchangePolicy(): iam.ManagedPolicy {
+    const logGroupArn = cdk.Stack.of(this).formatArn({
+      service: 'logs', resource: 'log-group', resourceName: 'greengrass/systemLogs:*',
+      arnFormat: cdk.ArnFormat.COLON_RESOURCE_NAME,
+    });
+    const logStreamArn = cdk.Stack.of(this).formatArn({
+      service: 'logs', resource: 'log-group',
+      resourceName: 'greengrass/systemLogs:log-stream:${credentials-iot:ThingName}',
+      arnFormat: cdk.ArnFormat.COLON_RESOURCE_NAME,
+    });
+
+    const ecrRepositoryArn = cdk.Stack.of(this).formatArn({
+      service: 'ecr', resource: 'repository', resourceName: '*',
+    });
+
+    // This policy is tighter than that created by Greengrass automatic provisioning
     const policy = new iam.ManagedPolicy(this, `${this.stackName}TokenExchangeRoleAccess`, {
       managedPolicyName: `${this.stackName}TokenExchangeRoleAccess`,
       statements: [
-        // Basic token exchange role for nucleus 2.5.0 and later.
-        // https://docs.aws.amazon.com/greengrass/v2/developerguide/device-service-role.html#device-service-role-permissions
         new iam.PolicyStatement({
           actions: [
             'logs:CreateLogGroup',
-            'logs:CreateLogStream',
-            'logs:PutLogEvents',
-            'logs:DescribeLogStreams',
-            's3:GetBucketLocation',
           ],
           effect: iam.Effect.ALLOW,
-          resources: ['*']
+          resources: [logGroupArn]
         }),
-        // Allow access to S3 buckets for component artifacts (placeholder resource)
+        new iam.PolicyStatement({
+          actions: [
+            'logs:CreateLogStream',
+            'logs:PutLogEvents',
+          ],
+          effect: iam.Effect.ALLOW,
+          resources: [logStreamArn]
+        }),
+        // Allow access to S3 buckets for component artifacts, without this policy being edited
         // https://docs.aws.amazon.com/greengrass/v2/developerguide/device-service-role.html#device-service-role-access-s3-bucket
         new iam.PolicyStatement({
           actions: [
-            's3:GetObject'
+            's3:GetBucketLocation',
           ],
           effect: iam.Effect.ALLOW,
-          resources: ['arn:aws:s3:::DOC-EXAMPLE-BUCKET/*']
+          resources: ['arn:aws:s3:::*']
+        }),
+        new iam.PolicyStatement({
+          actions: [
+            's3:GetObject',
+          ],
+          effect: iam.Effect.ALLOW,
+          resources: ['arn:aws:s3:::*/*']
+        }),
+        // Pull container images from any ECR private repository in this account/Region, so
+        // container-based components can be tested without editing this policy.
+        // https://docs.aws.amazon.com/greengrass/v2/developerguide/run-docker-container.html#run-docker-container-requirements
+        new iam.PolicyStatement({
+          actions: [
+            'ecr:BatchGetImage',
+            'ecr:GetDownloadUrlForLayer',
+          ],
+          effect: iam.Effect.ALLOW,
+          resources: [ecrRepositoryArn]
+        }),
+        // ecr:GetAuthorizationToken does not support resource-level permissions.
+        new iam.PolicyStatement({
+          actions: [
+            'ecr:GetAuthorizationToken',
+          ],
+          effect: iam.Effect.ALLOW,
+          resources: ['*']
         })
       ]
     });
@@ -299,7 +342,8 @@ export class GreengrassEC2DeviceFarmStack extends cdk.Stack {
     NagSuppressions.addResourceSuppressions(policy, [
       {
         id: 'AwsSolutions-IAM5',
-        reason: 'Resource wildcard is what automatic provisioning would otherwise create.'
+        reason: 'This is a non-production component test farm intended to run most components '
+          + 'without policy edits. Resources are scoped to partial ARNs where the service supports it.'
       }
     ])
 
@@ -320,21 +364,45 @@ export class GreengrassEC2DeviceFarmStack extends cdk.Stack {
       resourceName: this.greengrassRoleAlias.roleAlias!,
     });
 
+    const thing = '${iot:Connection.Thing.ThingName}';
+
+    const clientArn = (id: string) => cdk.Stack.of(this).formatArn({
+      service: 'iot', resource: 'client', resourceName: id,
+    });
+
+    // This policy is tighter than that created by Greengrass automatic provisioning
     const policy = new iot.CfnPolicy(this, `${this.stackName}IotThingPolicy`, {
       policyName: this.stackName,
       policyDocument: {
         Version: '2012-10-17',
         Statement: [
           {
+            // Connect only as this thing (Java runtime opens overflow connections with hash suffix).
+            Effect: 'Allow',
+            Action: 'iot:Connect',
+            Resource: clientArn(`${thing}*`),
+          },
+          {
+            // Open MQTT messaging for components under test.
+            Effect: 'Allow',
+            Action: ['iot:Publish', 'iot:Receive', 'iot:Subscribe'],
+            Resource: '*',
+          },
+          {
             Effect: 'Allow',
             Action: [
-              'iot:Connect',
-              'iot:Publish',
-              'iot:Subscribe',
-              'iot:Receive',
-              'greengrass:*',
+              'greengrass:GetComponentVersionArtifact',
+              'greengrass:ResolveComponentCandidates',
+              'greengrass:GetDeploymentConfiguration',
             ],
             Resource: '*',
+          },
+          {
+            Effect: 'Allow',
+            Action: 'greengrass:ListThingGroupsForCoreDevice',
+            Resource: cdk.Stack.of(this).formatArn({
+              service: 'iot', resource: 'thing', resourceName: thing,
+            }),
           },
           {
             Effect: 'Allow',

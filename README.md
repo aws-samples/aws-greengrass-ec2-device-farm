@@ -1,6 +1,6 @@
 # Greengrass EC2 Device Farm for component testing
 
-This [AWS Cloud Development Kit (CDK v2)](https://docs.aws.amazon.com/cdk/v2/guide/home.html) application deploys a heterogeneous test fleet of [AWS IoT Greengrass](https://docs.aws.amazon.com/greengrass/v2/developerguide/what-is-iot-greengrass.html) core devices as instances in EC2. The aim is to provide a fleet of Greengrass devices with disparate operating systems and machine architectures to support testing of [Greengrass components](https://docs.aws.amazon.com/greengrass/v2/developerguide/develop-greengrass-components.html).
+This [AWS Cloud Development Kit (CDK v2)](https://docs.aws.amazon.com/cdk/v2/guide/home.html) application deploys a heterogeneous test fleet of [AWS IoT Greengrass](https://docs.aws.amazon.com/greengrass/v2/developerguide/what-is-iot-greengrass.html) core devices as instances in EC2. The aim is to provide a fleet of Greengrass devices with disparate operating systems and machine architectures to support development and testing of [Greengrass components](https://docs.aws.amazon.com/greengrass/v2/developerguide/develop-greengrass-components.html) in non-production environments.
 
 # Instances
 
@@ -108,7 +108,9 @@ The application creates three AWS IoT static thing groups:
 | **GreengrassEC2DeviceFarm-nucleus** | Only the nucleus (Java) instances. |
 | **GreengrassEC2DeviceFarm-nucleus-lite** | Only the nucleus lite (C) instances. |
 
-You can use these as targets for your deployments to test your components. This CDK application also creates a Greengrass deployment named **Deployment for GreengrassEC2DeviceFarm-nucleus** that targets the **GreengrassEC2DeviceFarm-nucleus** group only. This deployment installs the nucleus CLI and configures the nucleus runtime.
+You can use these as targets for your deployments to test your components. This CDK application also creates a Greengrass deployment named **Deployment for GreengrassEC2DeviceFarm-nucleus** that targets the **GreengrassEC2DeviceFarm-nucleus** group only. This deployment installs the nucleus [Greengrass CLI](https://docs.aws.amazon.com/greengrass/v2/developerguide/greengrass-cli-component.html) so you can use it to develop and debug your components. The deployment also configures the nucleus runtime with best-practice settings.
+
+The [nucleus lite CLI](https://github.com/aws-greengrass/aws-greengrass-lite/blob/main/docs/ggl-cli.md) is installed in each nucleus lite instance by default.
 
 ## Nucleus Configuration
 
@@ -116,34 +118,30 @@ Each nucleus (Java) core device is initialized with the following configuration:
 
 | Parameter | Value | Purpose |
 | --------- | ----- | ------- |
-| `interpolateComponentConfiguration` | `true` | Enables [recipe variable interpolation](https://docs.aws.amazon.com/greengrass/v2/developerguide/ipc-component-configuration.html) in component configurations |
+| `interpolateComponentConfiguration` | `true` | Enables recipe variable interpolation in component configurations |
 | `greengrassDataPlaneEndpoint` | `iotdata` | Uses the IoT data endpoint for the Greengrass data plane |
+
+Recipe variable interpolation is recommended in your components to allow you to specify [least privilege access control in inter-process communication](https://docs.aws.amazon.com/greengrass/v2/developerguide/interprocess-communication.html#ipc-authorization-policies).
 
 ## Core Device Role
 
-The application creates a Greengrass core device IAM role named **GreengrassEC2DeviceFarmTokenExchangeRole** with attached IAM policy **GreengrassEC2DeviceFarmTokenExchangeRoleAccess**. All instances use this role through a role alias named **GreengrassEC2DeviceFarmTokenExchangeRoleAlias**. 
+The application creates a Greengrass core device IAM role named **GreengrassEC2DeviceFarmTokenExchangeRole** with attached IAM policy **GreengrassEC2DeviceFarmTokenExchangeRoleAccess**. All instances use this role through a role alias named **GreengrassEC2DeviceFarmTokenExchangeRoleAlias**.
 
-This role does not [allow access to S3 buckets for component artifacts](https://docs.aws.amazon.com/greengrass/v2/developerguide/device-service-role.html#device-service-role-access-s3-bucket) by default. **GreengrassEC2DeviceFarmTokenExchangeRoleAccess** contains a placeholder policy statement as follows:
-
-```
-    {
-      "Effect": "Allow",
-      "Action": [
-        "s3:GetObject"
-      ],
-      "Resource": "arn:aws:s3:::DOC-EXAMPLE-BUCKET/*"
-    }
-```
-
-To deploy your custom component, please replace `DOC-EXAMPLE-BUCKET` with the name of the bucket your component uses to store its artifacts. 
+This role is intentionally permissive enough that you can deploy and test most components without editing it. It grants permissive access to component artifacts in S3 and in Amazon ECR. It also grants the Amazon CloudWatch permissions needed by the AWS-provided [Log manager](https://docs.aws.amazon.com/greengrass/v2/developerguide/log-manager-component.html) and [System log forwarder](https://docs.aws.amazon.com/greengrass/v2/developerguide/system-log-forwarder-component.html) components, should you wish to use them to access your component logs.
 
 If your components need additional permissions (for example, [allowing access to secrets in Secret Manager](https://docs.aws.amazon.com/greengrass/v2/developerguide/secret-manager-component.html#secret-manager-component-requirements)), please add to or adjust the policies attached to this role.
+
+## IoT Thing Policy
+
+The application creates an AWS IoT policy named **GreengrassEC2DeviceFarm** and attaches it to each device's certificate. This role is intentionally permissive enough that you can deploy and test most components without editing it. It grants the devices permissive rights to publish, subscribe and receive on any MQTT topic.
+
+If you want stricter, per-topic scoping for a particular test (for example, to verify a component only uses the topics it should), please modify the policy. The [thing name policy variable](https://docs.aws.amazon.com/iot/latest/developerguide/thing-policy-variables.html) can be used to achieve scalable least-privilege policies that restrict each device to its own unique topics. This application attaches certificates to things using [exclusive thing association](https://docs.aws.amazon.com/iot/latest/developerguide/exclusive-thing.html), and this enables the use of thing policy variables with Greengrass core devices.
 
 ## Docker
 
 The Linux instances in the fleet are deployed with [all requirements to run a Docker container](https://docs.aws.amazon.com/greengrass/v2/developerguide/run-docker-container.html#run-docker-container-requirements), with both **docker** and **docker-compose** installed. Therefore it's possible to deploy and test container-based components on those instances. The Windows instances do no support Docker. Accordingly to test container-based components, it's advisable to create another thing group that includes just the Linux instances, and create another deployment that targets just that group.
 
-It may also be necessary to add to or adjust the policies attached to the **GreengrassEC2DeviceFarmTokenExchangeRole** core device role, to [allow access to containers in Amazon ECR or Amazon S3](https://docs.aws.amazon.com/greengrass/v2/developerguide/run-docker-container.html#run-docker-container-requirements).
+The core device role already grants the S3 and Amazon ECR permissions needed to [run container-based components](https://docs.aws.amazon.com/greengrass/v2/developerguide/run-docker-container.html#run-docker-container-requirements) (see [Core Device Role](#core-device-role)), so container components that pull images from S3 or a private ECR repository in this account work without editing the role.
 
 ## Security Groups
 
