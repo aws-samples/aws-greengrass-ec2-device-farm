@@ -65,16 +65,27 @@ export class GreengrassEC2DeviceFarmStack extends cdk.Stack {
     const ami_ubuntu_pro_2604_x86_64 = this.getUbuntuProAmi('26.04', 'amd64');
     const ami_ubuntu_pro_2604_arm_64 = this.getUbuntuProAmi('26.04', 'arm64');
 
-    // Windows first because it's slowest to come up
-    this.createInstance('ws2025-x86-nucleus', ami_windows_server_2025, 'nucleus');
-    this.createInstance('al2023-x86-nucleus', ami_al2023_x86_64, 'nucleus');
-    this.createInstance('al2023-arm-nucleus', ami_al2023_arm_64, 'nucleus');
-    this.createInstance('ub2604-x86-nucleus', ami_ubuntu_pro_2604_x86_64, 'nucleus');
-    this.createInstance('ub2604-arm-nucleus', ami_ubuntu_pro_2604_arm_64, 'nucleus');
-    this.createInstance('al2023-x86-nucleus-lite', ami_al2023_x86_64, 'nucleus-lite');
-    this.createInstance('al2023-arm-nucleus-lite', ami_al2023_arm_64, 'nucleus-lite');
-    this.createInstance('ub2604-x86-nucleus-lite', ami_ubuntu_pro_2604_x86_64, 'nucleus-lite');
-    this.createInstance('ub2604-arm-nucleus-lite', ami_ubuntu_pro_2604_arm_64, 'nucleus-lite');
+    const deviceTypes: { name: string, ami: ec2.IMachineImage, runtime: GreengrassRuntime }[] = [
+      { name: 'ws2025-x86-nucleus', ami: ami_windows_server_2025, runtime: 'nucleus' },
+      { name: 'al2023-x86-nucleus', ami: ami_al2023_x86_64, runtime: 'nucleus' },
+      { name: 'al2023-arm-nucleus', ami: ami_al2023_arm_64, runtime: 'nucleus' },
+      { name: 'ub2604-x86-nucleus', ami: ami_ubuntu_pro_2604_x86_64, runtime: 'nucleus' },
+      { name: 'ub2604-arm-nucleus', ami: ami_ubuntu_pro_2604_arm_64, runtime: 'nucleus' },
+      { name: 'al2023-x86-nucleus-lite', ami: ami_al2023_x86_64, runtime: 'nucleus-lite' },
+      { name: 'al2023-arm-nucleus-lite', ami: ami_al2023_arm_64, runtime: 'nucleus-lite' },
+      { name: 'ub2604-x86-nucleus-lite', ami: ami_ubuntu_pro_2604_x86_64, runtime: 'nucleus-lite' },
+      { name: 'ub2604-arm-nucleus-lite', ami: ami_ubuntu_pro_2604_arm_64, runtime: 'nucleus-lite' },
+    ];
+
+    // Create the number of instances of each device type, as configured in context.
+    for (const deviceType of deviceTypes) {
+      const count = this.getDeviceCount(deviceType.name);
+      for (let i = 0; i < count; i++) {
+        // A single instance keeps the bare type name; replicas get a 1-based suffix.
+        const instanceName = count === 1 ? deviceType.name : `${deviceType.name}-${i + 1}`;
+        this.createInstance(instanceName, deviceType.ami, deviceType.runtime);
+      }
+    }
 
     new cdk.CfnOutput(this, 'Key Pair Name', { value: this.keyPair.keyPairName });
     new cdk.CfnOutput(this, 'Download Key Command', {
@@ -466,6 +477,21 @@ export class GreengrassEC2DeviceFarmStack extends cdk.Stack {
         os: ec2.OperatingSystemType.LINUX
       }
     );
+  }
+
+  // Number of instances to create for a device type, from CDK context (default 1). 
+  private getDeviceCount(deviceTypeName: string): number {
+    const raw = this.node.tryGetContext(deviceTypeName);
+    if (raw === undefined) {
+      return 1;
+    }
+    const count = Number(raw);
+    if (!Number.isInteger(count) || count < 0) {
+      throw new Error(
+        `Invalid count for device type "${deviceTypeName}": ${JSON.stringify(raw)}. `
+        + `Expected a non-negative integer.`);
+    }
+    return count;
   }
 
   private createInstance(name: string, ami: ec2.IMachineImage, runtime: GreengrassRuntime) {

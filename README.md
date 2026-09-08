@@ -22,6 +22,45 @@ For each instance, Greengrass is [installed with manual resource provisioning](h
 
 Each Linux instance has an 8GB EBS volume and each Windows instance has a 30GB EBS volume.
 
+## Configuring the number of devices
+
+By default the fleet contains one instance of each of the nine device types above. You can change how many instances of each type are deployed using [CDK context](https://docs.aws.amazon.com/cdk/v2/guide/context.html) variables, one per device type. The context key is the device type name, and the value is the number of instances to create:
+
+| Device type | Context key |
+| ----------- | ----------- |
+| Amazon Linux 2023, x86_64, Nucleus | `al2023-x86-nucleus` |
+| Amazon Linux 2023, aarch64, Nucleus | `al2023-arm-nucleus` |
+| Ubuntu Pro 26.04, x86_64, Nucleus | `ub2604-x86-nucleus` |
+| Ubuntu Pro 26.04, aarch64, Nucleus | `ub2604-arm-nucleus` |
+| Windows Server 2025, x86_64, Nucleus | `ws2025-x86-nucleus` |
+| Amazon Linux 2023, x86_64, Nucleus lite | `al2023-x86-nucleus-lite` |
+| Amazon Linux 2023, aarch64, Nucleus lite | `al2023-arm-nucleus-lite` |
+| Ubuntu Pro 26.04, x86_64, Nucleus lite | `ub2604-x86-nucleus-lite` |
+| Ubuntu Pro 26.04, aarch64, Nucleus lite | `ub2604-arm-nucleus-lite` |
+
+Each count defaults to `1`, so a deployment with no overrides creates the original nine-device fleet. A count of `0` creates none of that type. For example, to deploy ten Ubuntu Pro 26.04 aarch64 nucleus lite devices and none of any other type:
+
+```
+cdk deploy \
+  -c ub2604-arm-nucleus-lite=10 \
+  -c ws2025-x86-nucleus=0 \
+  -c al2023-x86-nucleus=0 \
+  -c al2023-arm-nucleus=0 \
+  -c ub2604-x86-nucleus=0 \
+  -c ub2604-arm-nucleus=0 \
+  -c al2023-x86-nucleus-lite=0 \
+  -c al2023-arm-nucleus-lite=0 \
+  -c ub2604-x86-nucleus-lite=0
+```
+
+To deploy two Windows nucleus devices in addition to the default one of every other type, override just that one type:
+
+```
+cdk deploy -c ws2025-x86-nucleus=2
+```
+
+You can also set these values in the `context` block of `cdk.json` instead of passing them on the command line. 
+
 ## Connecting to instances
 
 To debug your Greengrass components, it's necessary to be able to access Greengrass logs on each core device. Amazon EC2 offers many connection options, including:
