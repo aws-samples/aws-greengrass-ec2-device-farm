@@ -13,6 +13,12 @@ import { NagSuppressions } from 'cdk-nag'
 
 type GreengrassRuntime = 'nucleus' | 'nucleus-lite';
 
+type ThingAttributes = {
+  runtime: GreengrassRuntime;
+  os: string;
+  arch: string;
+};
+
 export class GreengrassEC2DeviceFarmStack extends cdk.Stack {
 
   linuxSecurityGroup: ec2.SecurityGroup;
@@ -26,6 +32,7 @@ export class GreengrassEC2DeviceFarmStack extends cdk.Stack {
   allThingGroup: iot.CfnThingGroup;
   nucleusThingGroup: iot.CfnThingGroup;
   nucleusLiteThingGroup: iot.CfnThingGroup;
+  thingType: iot.CfnThingType;
   keyPair: ec2.KeyPair;
 
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -47,6 +54,7 @@ export class GreengrassEC2DeviceFarmStack extends cdk.Stack {
     this.allThingGroup = this.createThingGroup('all', this.stackName);
     this.nucleusThingGroup = this.createThingGroup('nucleus', `${this.stackName}-nucleus`);
     this.nucleusLiteThingGroup = this.createThingGroup('nucleus-lite', `${this.stackName}-nucleus-lite`);
+    this.thingType = this.createThingType();
 
     // All instances use the same EC2 role. It grants permissions for the Greengrass installer.
     this.instanceRole = this.createInstanceRole();
@@ -113,6 +121,9 @@ export class GreengrassEC2DeviceFarmStack extends cdk.Stack {
         'greengrass:ListDeployments',
         'greengrass:CancelDeployment',
         'greengrass:DeleteDeployment',
+        'iot:DeprecateThingType',
+        'iot:DescribeThingType',
+        'iot:DeleteThingType',
       ],
       resources: ['*'],
     }));
@@ -157,6 +168,7 @@ export class GreengrassEC2DeviceFarmStack extends cdk.Stack {
         FarmName: this.stackName,
         NucleusThingGroupArn: this.nucleusThingGroup.attrArn,
         AllThingGroupArn: this.allThingGroup.attrArn,
+        ThingTypeName: this.thingType.thingTypeName!,
         NucleusConfig: JSON.stringify({
           interpolateComponentConfiguration: 'true',
           greengrassDataPlaneEndpoint: 'iotdata',
@@ -166,6 +178,7 @@ export class GreengrassEC2DeviceFarmStack extends cdk.Stack {
 
     lifecycleResource.node.addDependency(this.iotThingPolicy);
     lifecycleResource.node.addDependency(this.greengrassRoleAlias);
+    lifecycleResource.node.addDependency(this.thingType);
   }
 
   private createVpc(): ec2.Vpc {
@@ -425,6 +438,22 @@ export class GreengrassEC2DeviceFarmStack extends cdk.Stack {
     });
   }
 
+  private createThingType(): iot.CfnThingType {
+    const thingType = new iot.CfnThingType(this, `${this.stackName}ThingType`, {
+      thingTypeName: `${this.stackName}CoreDevice`,
+      thingTypeProperties: {
+        thingTypeDescription: 'Greengrass EC2 Device Farm core device',
+        searchableAttributes: ['runtime', 'os', 'arch'],
+      },
+    });
+
+    // Deleting a thing type requires: deprecate it, remove all associated things, then wait
+    // five minutes before deleting. The lifecycle Lambda owns that sequence on stack delete.
+    thingType.applyRemovalPolicy(cdk.RemovalPolicy.RETAIN);
+
+    return thingType;
+  }
+
   private getAmazonLinuxAmi(cpuType: ec2.AmazonLinuxCpuType): ec2.IMachineImage {
     return ec2.MachineImage.latestAmazonLinux2023({
       cpuType: cpuType
@@ -455,15 +484,25 @@ export class GreengrassEC2DeviceFarmStack extends cdk.Stack {
       ? this.nucleusLiteThingGroup.thingGroupName!
       : this.nucleusThingGroup.thingGroupName!;
 
+    const ec2InstanceType = ec2.InstanceType.of(instanceType, instanceSize);
+
+    const thingAttributes: ThingAttributes = {
+      runtime,
+      os: name.includes('al2023') ? 'al2023'
+        : name.includes('ub2604') ? 'ubuntu-2604'
+        : 'windows-2025',
+      arch: name.includes('arm') ? 'aarch64' : 'amd64',
+    };
+
     const ec2Instance = new ec2.Instance(this, `${this.stackName}-${name}`, {
       instanceName: `${this.stackName}-${name}`,
       vpc: this.vpc,
-      instanceType: ec2.InstanceType.of(instanceType, instanceSize),
+      instanceType: ec2InstanceType,
       machineImage: ami,
       securityGroup: securityGroup,
       keyPair: this.keyPair,
       role: this.instanceRole,
-      userData: this.createUserData(`${this.stackName}-${name}`, runtime, runtimeThingGroupName),
+      userData: this.createUserData(`${this.stackName}-${name}`, runtime, runtimeThingGroupName, thingAttributes),
       // Override the AMI root device name to enable encryption for the root device (for AwsSolutions-EC26)
       blockDevices: [{
         deviceName: rootDeviceName,
@@ -529,16 +568,18 @@ wait_apt_lock() {
 
   // The shared Linux IoT provisioning sequence.
   private iotProvisionLinux(
-    instanceName: string, runtimeThingGroupName: string, certDir: string
+    instanceName: string, runtimeThingGroupName: string, certDir: string, thingAttributes: ThingAttributes
   ): string {
     const region = this.region;
     const allThingGroupName = this.stackName;
     const policyName = this.iotThingPolicy.policyName!;
+    const thingTypeName = this.thingType.thingTypeName!;
+    const attributePayload = `'${JSON.stringify({ attributes: thingAttributes })}'`;
     return `\
 DATA_ENDPOINT=$(aws iot describe-endpoint --endpoint-type iot:Data-ATS --region ${region} --query endpointAddress --output text)
 CRED_ENDPOINT=$(aws iot describe-endpoint --endpoint-type iot:CredentialProvider --region ${region} --query endpointAddress --output text)
 
-aws iot create-thing --thing-name ${instanceName} --region ${region}
+aws iot create-thing --thing-name ${instanceName} --thing-type-name ${thingTypeName} --attribute-payload ${attributePayload} --region ${region}
 
 CERT_ARN=$(aws iot create-keys-and-certificate --set-as-active --region ${region} \\
   --certificate-pem-outfile "${certDir}/device.pem.crt" \\
@@ -616,14 +657,14 @@ retry apt-get \${APT_OPTS} install -y sudo
 update-alternatives --set sudo /usr/bin/sudo.ws`;
   }
 
-  private nucleusProvisionAndConfigureLinux(instanceName: string, runtimeThingGroupName: string): string {
+  private nucleusProvisionAndConfigureLinux(instanceName: string, runtimeThingGroupName: string, thingAttributes: ThingAttributes): string {
     const region = this.region;
     const roleAliasName = this.greengrassRoleAlias.roleAlias!;
     return `\
 GG_ROOT="/greengrass/v2"
 mkdir -p "\${GG_ROOT}" GreengrassInstaller
 
-${this.iotProvisionLinux(instanceName, runtimeThingGroupName, '${GG_ROOT}')}
+${this.iotProvisionLinux(instanceName, runtimeThingGroupName, '${GG_ROOT}', thingAttributes)}
 
 cat > GreengrassInstaller/config.yaml <<EOF
 ---
@@ -669,11 +710,13 @@ choco install -y psexec
 psexec /accepteula -s cmd /c cmdkey /generic:ggc_user /user:ggc_user /pass:$env:PASSWORD
 choco uninstall -y psexec`;
 
-  private nucleusProvisionAndInstallRuntimeWindows(instanceName: string, runtimeThingGroupName: string): string {
+  private nucleusProvisionAndInstallRuntimeWindows(instanceName: string, runtimeThingGroupName: string, thingAttributes: ThingAttributes): string {
     const region = this.region;
     const allThingGroupName = this.stackName;
     const policyName = this.iotThingPolicy.policyName!;
     const roleAliasName = this.greengrassRoleAlias.roleAlias!;
+    const thingTypeName = this.thingType.thingTypeName!;
+    const attributePayload = `'${JSON.stringify({ attributes: thingAttributes }).replace(/"/g, '\\"')}'`;
     return `\
 $GG_ROOT = "C:\\greengrass\\v2"
 New-Item -ItemType Directory -Force -Path $GG_ROOT | Out-Null
@@ -682,7 +725,7 @@ New-Item -ItemType Directory -Force -Path .\\GreengrassInstaller | Out-Null
 $DATA_ENDPOINT = (aws iot describe-endpoint --endpoint-type iot:Data-ATS --region ${region} --query endpointAddress --output text)
 $CRED_ENDPOINT = (aws iot describe-endpoint --endpoint-type iot:CredentialProvider --region ${region} --query endpointAddress --output text)
 
-aws iot create-thing --thing-name ${instanceName} --region ${region}
+aws iot create-thing --thing-name ${instanceName} --thing-type-name ${thingTypeName} --attribute-payload ${attributePayload} --region ${region}
 
 $CERT_ARN = (aws iot create-keys-and-certificate --set-as-active --region ${region} \`
   --certificate-pem-outfile "$GG_ROOT\\device.pem.crt" \`
@@ -766,7 +809,7 @@ retry apt-get \${APT_OPTS} install -y build-essential pkg-config cmake git curl 
   libssl-dev libcurl4-openssl-dev uuid-dev libzip-dev libsqlite3-dev libyaml-dev \\
   libsystemd-dev libevent-dev liburiparser-dev cgroup-tools awscli`;
 
-  private nucleusLiteProvisionAndBuildRuntime(instanceName: string, runtimeThingGroupName: string): string {
+  private nucleusLiteProvisionAndBuildRuntime(instanceName: string, runtimeThingGroupName: string, thingAttributes: ThingAttributes): string {
     const region = this.region;
     const roleAliasName = this.greengrassRoleAlias.roleAlias!;
     return `\
@@ -781,7 +824,7 @@ getent passwd ggcore >/dev/null 2>&1 || useradd -r -g ggcore -s /usr/sbin/nologi
 getent group gg_component >/dev/null 2>&1 || groupadd -r gg_component
 getent passwd gg_component >/dev/null 2>&1 || useradd -r -g gg_component -s /usr/sbin/nologin gg_component
 
-${this.iotProvisionLinux(instanceName, runtimeThingGroupName, '${CERT_DIR}')}
+${this.iotProvisionLinux(instanceName, runtimeThingGroupName, '${CERT_DIR}', thingAttributes)}
 
 # Build and install nucleus lite from source at the latest released tag.
 GGL_SRC="/opt/aws-greengrass-lite"
@@ -839,7 +882,7 @@ chmod 640 "\${GG_CONFIG}/config.yaml"
 "\${GGL_SRC}/misc/run_nucleus"`;
   }
 
-  private createUserData(instanceName: string, runtime: GreengrassRuntime, runtimeThingGroupName: string) : ec2.UserData {
+  private createUserData(instanceName: string, runtime: GreengrassRuntime, runtimeThingGroupName: string, thingAttributes: ThingAttributes) : ec2.UserData {
     const isLite = runtime === 'nucleus-lite';
     const isAmazonLinux = instanceName.includes('al2023');
 
@@ -847,7 +890,7 @@ chmod 640 "\${GG_CONFIG}/config.yaml"
 
     if (instanceName.includes('ws2025')) {
       userData = `${GreengrassEC2DeviceFarmStack.nucleusInstallDepsWindows}\n`
-        + `${this.nucleusProvisionAndInstallRuntimeWindows(instanceName, runtimeThingGroupName)}\n`
+        + `${this.nucleusProvisionAndInstallRuntimeWindows(instanceName, runtimeThingGroupName, thingAttributes)}\n`
         + `</powershell>`;
     } else if (isLite) {
       const buildDeps = isAmazonLinux
@@ -857,7 +900,7 @@ chmod 640 "\${GG_CONFIG}/config.yaml"
         ? this.dockerInstallAmazonLinux('gg_component')
         : this.dockerInstallUbuntu('gg_component');
       userData = `${buildDeps}\n`
-        + `${this.nucleusLiteProvisionAndBuildRuntime(instanceName, runtimeThingGroupName)}\n`
+        + `${this.nucleusLiteProvisionAndBuildRuntime(instanceName, runtimeThingGroupName, thingAttributes)}\n`
         + `${dockerInstall}`;
     } else {
       const installDeps = isAmazonLinux ? this.nucleusInstallDepsAmazonLinux() : this.nucleusInstallDepsUbuntu();
@@ -865,7 +908,7 @@ chmod 640 "\${GG_CONFIG}/config.yaml"
         ? this.dockerInstallAmazonLinux('ggc_user')
         : this.dockerInstallUbuntu('ggc_user');
       userData = `${installDeps}\n`
-        + `${this.nucleusProvisionAndConfigureLinux(instanceName, runtimeThingGroupName)}\n`
+        + `${this.nucleusProvisionAndConfigureLinux(instanceName, runtimeThingGroupName, thingAttributes)}\n`
         + `${GreengrassEC2DeviceFarmStack.nucleusInstallRuntimeLinux}\n`
         + `${dockerInstall}`;
     }
