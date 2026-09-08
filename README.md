@@ -112,6 +112,18 @@ You can use these as targets for your deployments to test your components. This 
 
 The [nucleus lite CLI](https://github.com/aws-greengrass/aws-greengrass-lite/blob/main/docs/ggl-cli.md) is installed in each nucleus lite instance by default.
 
+## Thing Type and Fleet Indexing
+
+Every core device in the fleet is created with a single AWS IoT [thing type](https://docs.aws.amazon.com/iot/latest/developerguide/thing-types.html) named **GreengrassEC2DeviceFarmCoreDevice**. The thing type defines three [searchable attributes](https://docs.aws.amazon.com/iot/latest/developerguide/thing-types.html).
+
+| Attribute | Values | Description |
+| --------- | --------------------------------------- | ------------------------------------ |
+| `runtime` | `nucleus`, `nucleus-lite` | The Greengrass runtime on the device |
+| `os` | `al2023`, `ubuntu-2604`, `windows-2025` | The operating system |
+| `arch` | `amd64`, `aarch64` | The machine architecture |
+
+To search and filter on these attributes, and to build [dynamic thing groups](https://docs.aws.amazon.com/iot/latest/developerguide/dynamic-thing-groups.html) from them, you can enable [fleet indexing](https://docs.aws.amazon.com/iot/latest/developerguide/iot-indexing.html) in your account (it is off by default).
+
 ## Nucleus Configuration
 
 Each nucleus (Java) core device is initialized with the following configuration:

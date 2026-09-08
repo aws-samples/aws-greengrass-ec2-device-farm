@@ -3,7 +3,8 @@
 
 import { IoTClient, ListThingsInThingGroupCommand, ListThingPrincipalsCommand,
   DetachThingPrincipalCommand, ListAttachedPoliciesCommand, DetachPolicyCommand,
-  UpdateCertificateCommand, DeleteCertificateCommand, DeleteThingCommand } from '@aws-sdk/client-iot';
+  UpdateCertificateCommand, DeleteCertificateCommand, DeleteThingCommand,
+  DeprecateThingTypeCommand, DeleteThingTypeCommand } from '@aws-sdk/client-iot';
 import { GreengrassV2Client, DeleteCoreDeviceCommand,
   ListDeploymentsCommand, CancelDeploymentCommand, DeleteDeploymentCommand,
   CreateDeploymentCommand, ListComponentVersionsCommand } from '@aws-sdk/client-greengrassv2';
@@ -13,6 +14,7 @@ const greengrassv2 = new GreengrassV2Client();
 
 const MAX_RETRIES = 5;
 const RETRY_BASE_DELAY_MS = 5000;
+const DELETE_RESERVE_MS = 7 * 60 * 1000;
 
 async function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
@@ -114,7 +116,7 @@ async function deleteThingsInGroup(thingGroupArn: string): Promise<void> {
   }
 }
 
-async function deleteDeployments(thingGroupArn: string): Promise<void> {
+async function deleteDeployments(thingGroupArn: string, deadlineMs: number): Promise<void> {
   console.log('Getting Greengrass deployments');
   const deployments: any[] = [];
   try {
@@ -131,7 +133,14 @@ async function deleteDeployments(thingGroupArn: string): Promise<void> {
   }
 
   console.log(`  Found ${deployments.length} deployment(s) to delete`);
+  let processed = 0;
   for (const deployment of deployments) {
+    // We might have too many deployments to delete them all within the Lambda timeout
+    if (Date.now() >= deadlineMs) {
+      const remaining = deployments.length - processed;
+      console.log(`  Time budget reached; leaving ${remaining} deployment(s) for a later run`);
+      break;
+    }
     const deploymentId = deployment.deploymentId!;
     try {
       console.log(`  Canceling deployment ${deploymentId}`);
@@ -147,6 +156,54 @@ async function deleteDeployments(thingGroupArn: string): Promise<void> {
       await sleep(2000);
     } catch (e: any) {
       console.log(`  Error deleting deployment ${deploymentId}: ${e.message}`);
+    }
+    processed++;
+  }
+}
+
+async function deprecateThingType(thingTypeName: string): Promise<number | null> {
+  console.log(`Deprecating thing type ${thingTypeName}`);
+  try {
+    await iot.send(new DeprecateThingTypeCommand({ thingTypeName, undoDeprecate: false }));
+    return Date.now();
+  } catch (e: any) {
+    if (e.name === 'ResourceNotFoundException') {
+      console.log(`  Thing type ${thingTypeName} not found, nothing to do`);
+    } else {
+      console.log(`  Error deprecating thing type: ${e.message}`);
+    }
+    return null;
+  }
+}
+
+// Deletion can't occur until 5 minutes after deprecation
+async function deleteThingTypeAfterWait(thingTypeName: string, deprecatedAtMs: number): Promise<void> {
+  const REQUIRED_WAIT_MS = 5 * 60 * 1000 + 15000;
+  const remainingMs = Math.max(0, REQUIRED_WAIT_MS - (Date.now() - deprecatedAtMs));
+  console.log(`  Waiting ${remainingMs}ms more before deleting thing type ${thingTypeName}`);
+  if (remainingMs > 0) {
+    await sleep(remainingMs);
+  }
+
+  console.log(`  Deleting thing type ${thingTypeName}`);
+  const DELETE_ATTEMPTS = 5;
+  const DELETE_BACKOFF_MS = 20000;
+  for (let attempt = 0; attempt < DELETE_ATTEMPTS; attempt++) {
+    try {
+      await iot.send(new DeleteThingTypeCommand({ thingTypeName }));
+      console.log(`  Deleted thing type ${thingTypeName}`);
+      return;
+    } catch (e: any) {
+      const tooEarly = e.name === 'InvalidRequestException';
+      const throttled = e.name === 'ThrottlingException' || e.Code === 'ThrottlingException';
+      if ((tooEarly || throttled) && attempt < DELETE_ATTEMPTS - 1) {
+        console.log(`  Delete not ready (${e.name}); retrying in ${DELETE_BACKOFF_MS}ms `
+          + `(${attempt + 1}/${DELETE_ATTEMPTS})...`);
+        await sleep(DELETE_BACKOFF_MS);
+      } else {
+        console.log(`  Error deleting thing type ${thingTypeName} (left deprecated): ${e.message}`);
+        return;
+      }
     }
   }
 }
@@ -179,7 +236,7 @@ async function createDeployment(thingGroupArn: string, deploymentName: string, n
   console.log(`Created deployment ${deploymentResponse.deploymentId}`);
 }
 
-export async function handler(event: any): Promise<any> {
+export async function handler(event: any, context?: any): Promise<any> {
   console.log('Event:', JSON.stringify(event));
 
   const requestType = event.RequestType;
@@ -187,6 +244,7 @@ export async function handler(event: any): Promise<any> {
   const nucleusThingGroupArn = event.ResourceProperties.NucleusThingGroupArn;
   const allThingGroupArn = event.ResourceProperties.AllThingGroupArn;
   const nucleusConfig = event.ResourceProperties.NucleusConfig;
+  const thingTypeName = event.ResourceProperties.ThingTypeName;
 
   if (requestType === 'Create') {
     console.log(`Creating Greengrass deployment for ${farmName}`);
@@ -203,9 +261,20 @@ export async function handler(event: any): Promise<any> {
   if (requestType === 'Delete') {
     console.log(`Cleaning up IoT resources for ${farmName}`);
 
-    // Delete every thing in the fleet (all-group), then the deployment on the nucleus group.
+    const deprecatedAtMs = await deprecateThingType(thingTypeName);
     await deleteThingsInGroup(allThingGroupArn);
-    await deleteDeployments(nucleusThingGroupArn);
+
+    // We might not have time to delete all deployments. Put a cap on it.
+    const nowMs = Date.now();
+    const remainingMs = (context && typeof context.getRemainingTimeInMillis === 'function')
+      ? context.getRemainingTimeInMillis()
+      : 14 * 60 * 1000;
+    const deployDeadlineMs = nowMs + Math.max(0, remainingMs - DELETE_RESERVE_MS);
+    await deleteDeployments(nucleusThingGroupArn, deployDeadlineMs);
+
+    if (deprecatedAtMs !== null) {
+      await deleteThingTypeAfterWait(thingTypeName, deprecatedAtMs);
+    }
 
     console.log('Clean-up complete.');
     return { PhysicalResourceId: farmName };
