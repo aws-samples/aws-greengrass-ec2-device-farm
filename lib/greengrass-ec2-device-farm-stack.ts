@@ -150,6 +150,10 @@ export class GreengrassEC2DeviceFarmStack extends cdk.Stack {
       {
         id: 'AwsSolutions-IAM5',
         reason: 'IoT and Greengrass lifecycle management requires broad resource access.'
+      },
+      {
+        id: 'AwsSolutions-L1',
+        reason: 'Uses Runtime.NODEJS_LATEST, the newest Node.js runtime available in all regions.'
       }
     ], true)
 
@@ -170,6 +174,10 @@ export class GreengrassEC2DeviceFarmStack extends cdk.Stack {
       {
         id: 'AwsSolutions-IAM5',
         reason: 'Custom resource provider framework requires broad permissions.'
+      },
+      {
+        id: 'AwsSolutions-L1',
+        reason: 'Custom resource provider framework runtime is chosen by CDK (Node.js latest available in all regions).'
       }
     ], true)
 
