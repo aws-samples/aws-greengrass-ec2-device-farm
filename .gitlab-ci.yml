@@ -1,0 +1,29 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# Run pipelines for merge requests and the default branch only
+workflow:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+stages:
+  - CDK
+
+# Type check, unit test and synthesize (includes cdk-nag) the CDK app.
+# Synth needs no AWS credentials. Device counts default to 1.
+cdk:
+  image: node:24
+  stage: CDK
+  cache:
+    key: npm
+    paths:
+      - .npm/
+  before_script:
+    - npm ci --cache .npm --prefer-offline
+    - node --version
+    - npx cdk --version
+  script:
+    - npm run build
+    - npm test
+    - npx cdk synth --quiet --no-notices
